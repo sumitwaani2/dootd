@@ -1,0 +1,22 @@
+name: E2E
+
+# Runs the phase end-to-end scripts on a real Ubuntu 24.04 VM (systemd,
+# cgroup v2 with all controllers), which unit tests cannot cover.
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  phase1:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Phase 1 - run supervised apps
+        run: sudo env "PATH=$PATH" GOTOOLCHAIN=local ./scripts/e2e/phase1.sh

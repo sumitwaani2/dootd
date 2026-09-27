@@ -39,7 +39,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "help", "--help", "-h":
 		fmt.Fprint(stdout, usage)
 		return 0
-	case "serve", "init", "reset-password":
+	case "serve":
+		return runServe(args[1:], stderr)
+	case "init", "reset-password":
 		fmt.Fprintf(stderr, "dootd: %q is not implemented yet in %s\n", args[0], buildinfo.Version)
 		return 1
 	default:
