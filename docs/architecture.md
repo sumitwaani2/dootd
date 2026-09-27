@@ -340,8 +340,8 @@ The last 2 `.pre-restore` folders are kept.
 1. Settings → "Check for update" calls the GitHub Releases API for `sumitwaani2/dootd`.
 2. dootd downloads the binary for its architecture and `checksums.txt`, then verifies the SHA-256.
 3. It writes the new binary to `/usr/local/bin/dootd.new`, `fsync`s it and renames it over the old one. The previous binary is kept as `dootd.prev`.
-4. It exits with a special code, and systemd restarts it. The new version runs DB migrations on startup.
-5. If the new version fails to start 3 times, the `ExecStartPre` guard restores `dootd.prev`.
+4. It exits with a special code, and systemd restarts it. Before running any pending DB migrations, the new version saves `dootd.db.pre-update` (a `VACUUM INTO` copy).
+5. If the new version fails to start 3 times, the `ExecStartPre` guard restores `dootd.prev` and `dootd.db.pre-update`. This matters because an older binary refuses to open a schema newer than it knows.
 
 ## 16. Resource budget (targets)
 
