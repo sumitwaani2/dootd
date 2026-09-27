@@ -25,6 +25,10 @@ static void on_term(int sig) { (void)sig; stopping = 1; }
 
 static sqlite3 *db;
 
+// Keeps /alloc memory reachable so the compiler cannot optimize it away.
+static char *volatile leaked[1024];
+static size_t nleaked;
+
 static const char *env_or_die(const char *name) {
     const char *v = getenv(name);
     if (!v || !*v) {
@@ -114,7 +118,14 @@ static void handle(int fd) {
             respond(fd, 500, "Internal Server Error", "text/plain", "malloc failed\n");
             return;
         }
-        memset(p, 1, (size_t)mb << 20);  // touch the pages so they count; intentionally leaked
+        // Fill with pseudo-random bytes so the pages really count (and can't
+        // be compressed away by zswap). Intentionally leaked.
+        uint64_t x = 88172645463325252ull;
+        for (size_t i = 0; i < ((size_t)mb << 20); i += 8) {
+            x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+            memcpy(p + i, &x, 8);
+        }
+        leaked[nleaked++ % 1024] = p;
         respond(fd, 200, "OK", "text/plain", "allocated\n");
     } else if (strcmp(target, "/crash") == 0) {
         respond(fd, 200, "OK", "text/plain", "crashing\n");

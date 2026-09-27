@@ -242,6 +242,9 @@ func (g *Group) SetLimits(l Limits) (skipped []string, err error) {
 	}
 	if l.NoSwap {
 		errs = append(errs, set("memory", "memory.swap.max", "0"))
+		if _, err := os.Stat(filepath.Join(g.Path, "memory.zswap.max")); err == nil {
+			errs = append(errs, set("memory", "memory.zswap.max", "0"))
+		}
 	}
 	if l.CPUMax > 0 {
 		const period = 100000

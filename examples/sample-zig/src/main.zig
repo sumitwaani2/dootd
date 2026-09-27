@@ -107,7 +107,11 @@ fn handle(fd: libc.fd_t, release: []const u8) void {
         if (mb == 0 or mb > 65536) return respond(fd, "400 Bad Request", "text/plain", "mb must be 1..65536\n");
         const p: ?[*]u8 = @ptrCast(libc.malloc(mb << 20));
         const mem = p orelse return respond(fd, "500 Internal Server Error", "text/plain", "malloc failed\n");
-        @memset(mem[0 .. mb << 20], 1); // touch the pages so they count; intentionally leaked
+        // Fill with pseudo-random bytes so the pages really count (and can't
+        // be compressed away by zswap). Intentionally leaked.
+        var prng = std.Random.DefaultPrng.init(0x5eed);
+        prng.random().bytes(mem[0 .. mb << 20]);
+        std.mem.doNotOptimizeAway(mem);
         respond(fd, "200 OK", "text/plain", "allocated\n");
     } else if (std.mem.eql(u8, target, "/crash")) {
         respond(fd, "200 OK", "text/plain", "crashing\n");

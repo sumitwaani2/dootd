@@ -129,6 +129,13 @@ say "OOM: exceeding memory.max is detected and the app restarts"
 old="$(app_pid sample-c)"
 curl -s -m 10 "http://127.0.0.1:20002/alloc?mb=200" >/dev/null || true
 check "OOM kill logged" wait_for 10 log_has sample-c "OOM:"
+if ! log_has sample-c "OOM:"; then
+  echo "  memory diagnostics:"
+  for f in memory.current memory.swap.current memory.zswap.current memory.zswap.max memory.events; do
+    echo "   $f: $(cg sample-c "$f" 2>&1 | tr '\n' ' ')"
+  done
+  grep -E '^(anon|zswap|zswapped|file) ' "/sys/fs/cgroup/system.slice/${UNIT}.service/apps/sample-c/memory.stat" || true
+fi
 check "sample-c restarted and healthy" wait_for 30 healthy 20002
 check "sample-c has a new pid" [ "$(app_pid sample-c)" != "$old" ]
 
