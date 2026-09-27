@@ -14,7 +14,7 @@ Contract version: **1**
 - [ ] All SQLite files live in **`$DATA_DIR`**, and nothing else is written anywhere except `$TMPDIR`.
 - [ ] `GET <health_path>` returns 2xx once the app is ready.
 - [ ] On **SIGTERM**, the app finishes in-flight requests and exits within 10 s.
-- [ ] Logs go to **stdout/stderr**. The app does not daemonize or fork into the background.
+- [ ] Logs go to **stdout/stderr**, one line per entry, and stdout is line-buffered or flushed (see §7). The app does not daemonize or fork into the background.
 - [ ] Secrets come from environment variables, never from the repo.
 
 ---
@@ -136,6 +136,9 @@ SIGTERM (deploy / restart / stop) ──► finish requests, close DB ──► 
 
 - dootd starts your binary directly and supervises it. If it crashes, dootd restarts it with backoff (1 s, 2 s, 4 s … up to 60 s). After 5 crashes in 5 minutes, the app is marked **crashed** and left stopped.
 - Don't daemonize, double-fork or write PID files.
+- When the main process exits, dootd kills anything else still running in the app's cgroup.
+- stdout is a pipe, not a terminal, so C's stdio buffers it fully by default. Call `setvbuf(stdout, NULL, _IOLBF, 0)` at startup (or write logs to stderr), otherwise log lines appear late or are lost on a crash. `std.debug.print` in Zig writes unbuffered to stderr.
+- Lines longer than 16 KB are split into several log lines.
 
 ---
 

@@ -164,7 +164,8 @@ Recovery: `dootd reset-password` over SSH is the only emergency path.
 ExecStart=/usr/local/bin/dootd serve
 Restart=always
 Delegate=yes              # dootd owns its cgroup subtree
-KillMode=control-group    # stopping dootd stops all apps
+KillMode=mixed            # SIGTERM to dootd only (it stops apps gracefully); SIGKILL leftovers after the timeout
+TimeoutStopSec=45s
 LimitNOFILE=65536
 ```
 
@@ -223,12 +224,15 @@ Because of `Delegate=yes`, dootd owns `/sys/fs/cgroup/system.slice/dootd.service
 ```
 dootd.service/
   supervisor/            dootd itself
-  apps/<app>/            runtime: memory.max, memory.high(=90%), cpu.max, pids.max
+  apps/<app>/            runtime: memory.max, memory.swap.max=0, memory.zswap.max=0, cpu.max, pids.max
   builds/<app>/          build: memory.max=build_mem_max, cpu.weight=50 (builds yield to apps)
 ```
 
 - Processes start directly inside their cgroup using `SysProcAttr{CgroupFD, UseCgroupFD: true}` (clone3 `CLONE_INTO_CGROUP`), with `Credential{Uid,Gid}`, `Setpgid`, and `Pdeathsig: SIGKILL`.
-- On stop, if the process tree hasn't exited after the grace period, dootd writes `1` to `cgroup.kill`, so no orphans are left behind.
+- On stop, if the process tree hasn't exited after the grace period, dootd SIGKILLs every PID listed in the cgroup, repeating until no new ones appear, so no orphans are left behind. When the main process exits for any reason, the rest of its cgroup is killed the same way.
+- dootd does **not** use `cgroup.kill`. On Ubuntu 24.04 (kernel 6.17) we found that after `cgroup.kill` has been written once, every new child placed into that cgroup with `CLONE_INTO_CGROUP` is killed immediately, which breaks restarts (verified in the Phase 1 E2E run).
+- No `memory.high`: with swap disabled for apps it cannot reclaim anything and only stalls the app. A clean OOM kill at `memory.max` followed by a restart is more predictable.
+- Other rlimits: `RLIMIT_NOFILE` is set per app with `prlimit`. The app gets a clean environment (only `PATH`, `LANG`, the contract variables and user env vars), not dootd's.
 - `memory.events` is watched, and OOM kills show up in the app's event log.
 
 ### 10.3 Supervisor
@@ -259,7 +263,7 @@ Deploy clicked
  7. Move workspace → apps/<app>/releases/<release-id>/ (chown root, read-only)
  ── downtime starts ──
  8. Router marks app `deploying` (503 page)
- 9. Stop old process (SIGTERM, 10 s, cgroup.kill)
+ 9. Stop old process (SIGTERM, 10 s, then SIGKILL the cgroup)
 10. Pre-deploy backup of DATA_DIR SQLite files (snapshot local; upload async)
 11. Swap `current` symlink atomically (rename)
 12. Wipe tmp/, start new process, health check
@@ -365,3 +369,6 @@ The last 2 `.pre-restore` folders are kept.
 | D7 | Snapshot backups every 3 h (not continuous replication) | RPO 3 h accepted; much simpler than a Litestream-style design |
 | D8 | Pinned Zig per app, also used as C compiler | Reproducible builds, a single toolchain |
 | D9 | htmx + server-rendered SVG | No frontend build pipeline |
+| D10 | Kill cgroups by PID, not `cgroup.kill` | `cgroup.kill` makes later `CLONE_INTO_CGROUP` children die instantly on current Ubuntu kernels |
+| D11 | No `memory.high`, swap and zswap off for apps | Predictable OOM + restart instead of an app stalled near its limit |
+| D12 | E2E scripts run on GitHub-hosted Ubuntu 24.04 VMs | Real systemd + full cgroup v2; catches kernel behaviour unit tests cannot |
