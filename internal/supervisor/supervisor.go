@@ -95,12 +95,13 @@ func (s *Supervisor) Add(spec app.Spec) (*App, error) {
 }
 
 func applyLimits(g *cgroup.Group, l app.Limits) error {
+	// No memory.high: without swap it cannot reclaim app memory and only
+	// stalls the app (observed in E2E); a clean OOM kill + restart is better.
 	_, err := g.SetLimits(cgroup.Limits{
-		MemoryMax:  l.MemoryMax,
-		MemoryHigh: l.MemoryMax / 10 * 9,
-		NoSwap:     true, // predictable OOM at memory.max instead of swapping
-		CPUMax:     l.CPUMax,
-		PidsMax:    l.PidsMax,
+		MemoryMax: l.MemoryMax,
+		NoSwap:    true, // predictable OOM at memory.max instead of swapping
+		CPUMax:    l.CPUMax,
+		PidsMax:   l.PidsMax,
 	})
 	return err
 }

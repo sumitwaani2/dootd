@@ -291,24 +291,37 @@ func (g *Group) Populated() (bool, error) {
 	return kv["populated"] != 0, nil
 }
 
-// Kill SIGKILLs every process in the group.
+// Kill SIGKILLs every process in the group. It repeats until a pass finds
+// no new processes, so children forked during the kill are caught too.
+//
+// It deliberately does NOT use cgroup.kill: on the Ubuntu 24.04 kernels we
+// tested, once cgroup.kill had been written for a group, every later child
+// spawned into that group with clone3(CLONE_INTO_CGROUP) was SIGKILLed right
+// away, which broke restarts. See scripts/e2e/phase1.sh (crash loop test).
 func (g *Group) Kill() error {
-	err := writeFile(filepath.Join(g.Path, "cgroup.kill"), "1")
-	if err == nil {
-		return nil
+	signaled := map[int]bool{}
+	for pass := 0; pass < 20; pass++ {
+		pids, err := g.Procs()
+		if err != nil {
+			return err
+		}
+		fresh := 0
+		for _, p := range pids {
+			if signaled[p] {
+				continue
+			}
+			signaled[p] = true
+			fresh++
+			if err := syscall.Kill(p, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+				return fmt.Errorf("cgroup: kill pid %d in %s: %w", p, g.Path, err)
+			}
+		}
+		if fresh == 0 {
+			return nil
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	if !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("cgroup: kill %s: %w", g.Path, err)
-	}
-	// Kernels before 5.14 have no cgroup.kill.
-	pids, err := g.Procs()
-	if err != nil {
-		return err
-	}
-	for _, p := range pids {
-		_ = syscall.Kill(p, syscall.SIGKILL)
-	}
-	return nil
+	return fmt.Errorf("cgroup: %s keeps spawning processes while being killed", g.Path)
 }
 
 // WaitEmpty blocks until the group has no processes or ctx ends.

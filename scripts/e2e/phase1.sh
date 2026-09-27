@@ -40,6 +40,7 @@ down() { ! healthy "$1"; }
 
 [ "$(id -u)" -eq 0 ] || { echo "run as root"; exit 1; }
 cd "$(dirname "$0")/../.."
+echo "kernel $(uname -r), $(. /etc/os-release && echo "$PRETTY_NAME")"
 
 say "Install Zig $ZIG_VERSION"
 if ! command -v zig >/dev/null || [ "$(zig version)" != "$ZIG_VERSION" ]; then

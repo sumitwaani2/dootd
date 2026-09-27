@@ -18,5 +18,35 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      - name: TEMP diag - CLONE_INTO_CGROUP after cgroup.kill
+        run: |
+          mkdir -p /tmp/diag && cd /tmp/diag
+          cat > go.mod <<'EOF'
+          module diag
+          go 1.27
+          EOF
+          cat > main.go <<'EOF'
+          package main
+          import ("fmt";"os";"os/exec";"syscall")
+          func spawn(dir string) string {
+            fd, _ := syscall.Open(dir, syscall.O_RDONLY|syscall.O_DIRECTORY, 0)
+            defer syscall.Close(fd)
+            c := exec.Command("/bin/true")
+            c.SysProcAttr = &syscall.SysProcAttr{UseCgroupFD: true, CgroupFD: fd}
+            if err := c.Start(); err != nil { return err.Error() }
+            c.Wait()
+            return c.ProcessState.String()
+          }
+          func main() {
+            root := os.Args[1]
+            os.MkdirAll(root+"/sup", 0o755); os.WriteFile(root+"/sup/cgroup.procs", []byte(fmt.Sprint(os.Getpid())), 0)
+            os.MkdirAll(root+"/g", 0o755)
+            fmt.Println("before cgroup.kill:", spawn(root+"/g"))
+            fmt.Println("write cgroup.kill:", os.WriteFile(root+"/g/cgroup.kill", []byte("1"), 0))
+            fmt.Println("after cgroup.kill: ", spawn(root+"/g"))
+          }
+          EOF
+          go build -o diag . && uname -r
+          sudo systemd-run --wait --pipe -p Delegate=yes --unit=diag bash -c 'd=/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup); /tmp/diag/diag $d'
       - name: Phase 1 - run supervised apps
         run: sudo env "PATH=$PATH" GOTOOLCHAIN=local ./scripts/e2e/phase1.sh
