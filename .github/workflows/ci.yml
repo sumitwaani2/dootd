@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Lint (gofmt, vet, staticcheck)
+        run: make lint
+      - name: Test
+        run: make test
+
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Build static binary
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          CGO_ENABLED=0 go build -trimpath -o dist/dootd-linux-${GOARCH} ./cmd/dootd
+          file dist/dootd-linux-${GOARCH}
+      - name: Smoke test (amd64)
+        if: matrix.goarch == 'amd64'
+        run: ./dist/dootd-linux-amd64 version

@@ -6,7 +6,7 @@ This plan builds dootd in phases. Each phase ends with something that works and 
 
 | Phase | Name | Outcome | Status |
 |---|---|---|---|
-| 0 | Foundations | Repo, CI, release pipeline, test VPS | ⬜ |
+| 0 | Foundations | Repo, CI, release pipeline, test VPS | 🟨 |
 | 1 | Run an app | Supervise a local binary with users, cgroups and logs | ⬜ |
 | 2 | Build and deploy | GitHub → Zig build → release → health-checked deploy and rollback | ⬜ |
 | 3 | Edge | :443, CF-only, Origin CA, AOP, host routing, DNS | ⬜ |
@@ -21,13 +21,13 @@ Phases 1–3 are mostly used through the CLI or a config file, so the risky part
 
 ## Phase 0: Foundations
 
-- [ ] Go module `github.com/sumitwaani2/dootd`, set up the `cmd/` + `internal/` layout (architecture §5).
-- [ ] `dootd version` subcommand. Version, commit and date are injected at build time with `-ldflags`.
-- [ ] GitHub Actions:
+- [x] Go module `github.com/sumitwaani2/dootd`, set up the `cmd/` + `internal/` layout (architecture §5).
+- [x] `dootd version` subcommand. Version, commit and date are injected at build time with `-ldflags`.
+- [x] GitHub Actions:
   - CI on every PR: `go vet`, `staticcheck`, `go test ./...`, and a `CGO_ENABLED=0` build for amd64 and arm64.
   - Release on `v*` tags: build `dootd-linux-amd64` and `dootd-linux-arm64`, write `checksums.txt`, attach `install.sh`.
-- [ ] `store` package: open SQLite (WAL, single writer) and run embedded numbered migrations.
-- [ ] `secrets` package: load or create `master.key`, `Seal`/`Open` with AES-256-GCM.
+- [x] `store` package: open SQLite (WAL, single writer) and run embedded numbered migrations.
+- [x] `secrets` package: load or create `master.key`, `Seal`/`Open` with AES-256-GCM.
 - [ ] A cheap Ubuntu 24.04 test VPS (1 GB) and a test Cloudflare zone.
 
 **Done when:** tagging `v0.0.1` produces downloadable binaries that run `dootd version` on the VPS.
