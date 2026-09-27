@@ -23,7 +23,20 @@ Cloudflare (proxied, Full strict) ──HTTPS──► dootd (TLS + routing + da
 
 ## Status
 
-🚧 Design phase. Nothing is built yet.
+🚧 Phase 0 (foundations) is in progress. `dootd version` works; nothing is deployable yet. Progress is tracked in the [Kiro spec](.kiro/specs/dootd/tasks.md).
+
+## Development
+
+Requires Go (the version is in `go.mod`; older Go versions download it automatically).
+
+```bash
+make build       # dist/dootd for this machine
+make build-all   # static linux amd64 + arm64 binaries + checksums.txt
+make lint        # gofmt, go vet, staticcheck
+make test
+```
+
+Releases: push a `vX.Y.Z` tag and GitHub Actions publishes the binaries, `checksums.txt` and `install.sh`.
 
 ## Planned quick start
 
@@ -42,3 +55,4 @@ Then open `https://<dashboard-domain>` and never SSH again.
 | [docs/app-contract.md](docs/app-contract.md) | Writing a Zig/C app that dootd can host |
 | [docs/architecture.md](docs/architecture.md) | How dootd works inside (for maintaining it long-term) |
 | [docs/implementation-plan.md](docs/implementation-plan.md) | Phase-by-phase build plan |
+| [.kiro/specs/dootd/](.kiro/specs/dootd/) | Kiro spec: requirements, design and task list |
