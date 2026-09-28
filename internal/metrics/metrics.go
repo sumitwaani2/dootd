@@ -75,6 +75,7 @@ type Collector struct {
 	last  time.Time
 	cur   map[string][]rawSample // samples of the current minute
 	curM  time.Time
+	done  chan struct{}
 }
 
 type counters struct {
@@ -98,8 +99,10 @@ type cpuTimes struct{ total, idle uint64 }
 func (c *Collector) Run(ctx context.Context) {
 	c.mu.Lock()
 	c.rings, c.prev, c.cur = map[string][]Point{}, map[string]counters{}, map[string][]rawSample{}
+	c.done = make(chan struct{})
 	c.mu.Unlock()
 	go func() {
+		defer close(c.done)
 		c.prune(ctx)
 		c.sample(time.Now())
 		t := time.NewTicker(Every)
@@ -217,6 +220,17 @@ func (c *Collector) sample(now time.Time) {
 	c.mu.Unlock()
 	if flush != nil {
 		c.write(context.Background(), flushM, flush)
+	}
+}
+
+// Wait blocks until Run has written the last partial minute after its
+// context ended (so a restart loses no data).
+func (c *Collector) Wait() {
+	c.mu.RLock()
+	done := c.done
+	c.mu.RUnlock()
+	if done != nil {
+		<-done
 	}
 }
 

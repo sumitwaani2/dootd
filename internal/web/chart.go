@@ -90,19 +90,31 @@ func (c Chart) SVG() []byte {
 	// Series.
 	hasData := false
 	for _, l := range c.Lines {
-		var path strings.Builder
+		var path, dots strings.Builder
 		pen := false
 		var prev time.Time
+		segLen := 0
+		var segX, segY float64
+		endSeg := func() {
+			if segLen == 1 { // a lone point would be invisible as a path
+				fmt.Fprintf(&dots, `<circle cx="%.1f" cy="%.1f" r="2" fill="%s"/>`, segX, segY, l.Color)
+			}
+			segLen = 0
+		}
 		for i, v := range l.Values {
 			if i >= len(c.Times) {
 				break
 			}
 			t := c.Times[i]
 			if math.IsNaN(v) || t.Before(c.From) {
+				if pen {
+					endSeg()
+				}
 				pen = false
 				continue
 			}
 			if pen && c.Gap > 0 && t.Sub(prev) > c.Gap {
+				endSeg()
 				pen = false
 			}
 			cmd := "L"
@@ -111,13 +123,19 @@ func (c Chart) SVG() []byte {
 			}
 			fmt.Fprintf(&path, "%s%.1f %.1f", cmd, x(t), y(v))
 			pen, prev = true, t
+			segLen++
+			segX, segY = x(t), y(v)
 			if !l.Dashed {
 				hasData = true
 			}
 		}
+		if pen {
+			endSeg()
+		}
 		if path.Len() == 0 {
 			continue
 		}
+		b.WriteString(dots.String())
 		dash := ""
 		if l.Dashed {
 			dash = ` stroke-dasharray="4 3"`

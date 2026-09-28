@@ -413,7 +413,9 @@ func echo(args []string) {
 		keep = append(keep, b)
 		io.WriteString(w, "allocated\n")
 	})
-	mux.HandleFunc("/fail", func(w http.ResponseWriter, r *http.Request) { http.Error(w, "failing on purpose", http.StatusInternalServerError) })
+	mux.HandleFunc("/fail", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "failing on purpose", http.StatusInternalServerError)
+	})
 	mux.HandleFunc("/stream", func(w http.ResponseWriter, r *http.Request) {
 		fl := w.(http.Flusher)
 		for i := 1; i <= 3; i++ {

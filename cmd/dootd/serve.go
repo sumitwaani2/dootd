@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"sort"
 	"syscall"
 	"time"
@@ -59,6 +60,11 @@ func serve(log *slog.Logger, cfgPath string, cfgExplicit bool, devApps, socket s
 		return errors.New("dootd serve must run as root (it manages users and cgroups)")
 	}
 	log.Info("starting", "version", buildinfo.String())
+	// A soft heap limit keeps dootd well inside its 30 MB budget; the GC
+	// simply runs more often near it (GOMEMLIMIT overrides).
+	if os.Getenv("GOMEMLIMIT") == "" {
+		debug.SetMemoryLimit(20 << 20)
+	}
 
 	cfg, err := config.Load(cfgPath, cfgExplicit)
 	if err != nil {
@@ -237,6 +243,7 @@ loop:
 	log.Info("shutting down: cancelling deployments")
 	dep.Stop()
 	waitUploads(log, bk, 20*time.Second)
+	mc.Wait()
 	log.Info("stopping apps")
 	stopCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
