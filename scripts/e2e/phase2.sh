@@ -185,7 +185,8 @@ check "deploy fails" deploy fail sample-c
 check "error mentions the build exit code" last_has "build failed with exit code"
 check "still serving R1" page_has 20002 "Release: $R1<"
 check "same process kept running" test "$(app_pid sample-c)" = "$PID1"
-git -C "$WORK" revert -q --no-edit HEAD && git -C "$WORK" push -q origin HEAD
+git -C "$WORK" revert --no-edit HEAD >/dev/null
+  git -C "$WORK" push -q origin HEAD
 
 say "Unhealthy release: automatic rollback"
 sed -i 's|health_path *= *"[^"]*"|health_path = "/does-not-exist"|' "$WORK/dootd.toml"
@@ -195,7 +196,8 @@ check "reported as rolled back to R1" last_has "rolled back to release $R1"
 check "R1 serving again" wait_for 10 page_has 20002 "Release: $R1<"
 check "data survived the failed deploy" visits_ok
 check "failed release was removed" test "$(nreleases sample-c)" -eq 1
-git -C "$WORK" revert -q --no-edit HEAD && git -C "$WORK" push -q origin HEAD
+git -C "$WORK" revert --no-edit HEAD >/dev/null
+  git -C "$WORK" push -q origin HEAD
 
 say "Successful deploys, data persistence and pruning to 3 releases"
 for v in 2 3 4; do
