@@ -23,7 +23,16 @@ Cloudflare (proxied, Full strict) ──HTTPS──► dootd (TLS + routing + da
 
 ## Status
 
-🚧 Phase 0 (foundations) is in progress. `dootd version` works; nothing is deployable yet. Progress is tracked in the [Kiro spec](.kiro/specs/dootd/tasks.md).
+🚧 Phase 1 of 7 is done: dootd can supervise prebuilt apps (own user, cgroup limits, health checks, restarts, logs). There is no build, TLS or dashboard yet. Progress is tracked in the [Kiro spec](.kiro/specs/dootd/tasks.md).
+
+### Try Phase 1 on a test VPS
+
+```bash
+git clone https://github.com/sumitwaani2/dootd && cd dootd
+sudo ./scripts/e2e/phase1.sh   # installs Go-built dootd + Zig 0.16.0, runs both sample apps, 43 checks
+```
+
+It installs dootd as a systemd service reading `/etc/dootd/dev-apps.toml` (a temporary app list, replaced by the dashboard in Phase 4). Needs Go installed. While dootd runs, `sudo systemctl kill -s USR1 --kill-whom=main dootd` prints every app's status to `journalctl -u dootd`.
 
 ## Development
 

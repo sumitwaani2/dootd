@@ -1,0 +1,22 @@
+[Unit]
+Description=dootd - minimal PaaS for small Zig/C + SQLite apps
+Documentation=https://github.com/sumitwaani2/dootd
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/dootd serve
+Restart=always
+RestartSec=2s
+# dootd owns its cgroup subtree (supervisor/, apps/<app>/, builds/<app>/).
+Delegate=yes
+# SIGTERM goes to dootd only, so it can stop apps gracefully in order (and
+# not mistake them for crashes). Anything left after the timeout is SIGKILLed.
+KillMode=mixed
+# dootd forwards SIGTERM to apps and waits up to 10s each; leave headroom.
+TimeoutStopSec=45s
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

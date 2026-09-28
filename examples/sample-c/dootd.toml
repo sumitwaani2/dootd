@@ -1,0 +1,5 @@
+contract    = 1
+zig_version = "0.16.0"        # C is compiled with `zig cc` from this pinned Zig
+build       = "make"
+run         = "build/sample-c"
+health_path = "/healthz"

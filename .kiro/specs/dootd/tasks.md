@@ -36,32 +36,33 @@ Tasks are grouped by the phases in `docs/implementation-plan.md`. Each phase end
   - [x] 4.3 `install.sh` (Phase 0 subset): OS/arch/systemd/cgroup v2 checks, download, SHA-256 verification, install to `/usr/local/bin`
     - _Requirements: 2.1, 2.2, 2.3_
 
-- [ ] 5. Phase 0 checkpoint (manual)
+- [x] 5. Phase 0 checkpoint (manual)
   - Merge to `main`, tag `v0.0.1`, confirm the release assets exist
   - On a 1 GB Ubuntu 24.04 VPS: `curl -fsSL …/install.sh | sudo bash` then `dootd version`
   - Set up a test Cloudflare zone for Phase 3
 
 ## Phase 1: Run an app
 
-- [ ] 6. cgroup v2 management
-  - [ ] 6.1 Detect the delegated root, move self into `supervisor/`, create `apps/<app>` and `builds/<app>`, enable controllers
+- [x] 6. cgroup v2 management
+  - [x] 6.1 Detect the delegated root, move self into `supervisor/`, create `apps/<app>` and `builds/<app>`, enable controllers
     - _Requirements: 10.1_
-  - [ ] 6.2 Set and read limits (`memory.max`, `memory.high`, `cpu.max`, `pids.max`, `cpu.weight`), `cgroup.kill`, watch `memory.events`
+  - [x] 6.2 Set and read limits (`memory.max`, `memory.swap.max`, `cpu.max`, `pids.max`, `cpu.weight`), kill by PID (not `cgroup.kill`), watch `memory.events`
     - _Requirements: 10.1, 10.3, 10.6_
-- [ ] 7. Per-app users and directory layout (`data/`, `tmp/`, `releases/`, `logs/`, zig cache)
+- [x] 7. Per-app users and directory layout (`data/`, `tmp/`, `releases/`, `logs/`, zig cache)
   - _Requirements: 7.2, 10.1_
-- [ ] 8. Supervisor
-  - [ ] 8.1 Spawn with `CgroupFD`, `Credential`, `Setpgid`, `Pdeathsig`; contract env; working directory = current release
+- [x] 8. Supervisor
+  - [x] 8.1 Spawn with `CgroupFD`, `Credential`, `Setpgid`, `Pdeathsig`; contract env; working directory = current release
     - _Requirements: 10.1, 10.2_
-  - [ ] 8.2 State machine, health check (TCP connect, then HTTP GET), SIGTERM → 10 s → `cgroup.kill`
+  - [x] 8.2 State machine, health check (TCP connect, then HTTP GET), SIGTERM → 10 s → SIGKILL the cgroup
     - _Requirements: 10.3_
-  - [ ] 8.3 Backoff restarts, crashed after 5 exits in 5 min, start desired apps sequentially at boot
+  - [x] 8.3 Backoff restarts, crashed after 5 exits in 5 min, start desired apps sequentially at boot
     - _Requirements: 10.4, 10.5, 10.7_
-- [ ] 9. Logs: timestamped capture, 10 MB × 3 rotation, 1000-line ring buffer with subscriber fan-out
+- [x] 9. Logs: timestamped capture, 10 MB × 3 rotation, 1000-line ring buffer with subscriber fan-out
   - _Requirements: 13.1, 13.2_
-- [ ] 10. Temporary `dev-apps.toml` loader + `dootd serve` running supervised apps
-- [ ] 11. Sample repos `dootd-sample-zig` and `dootd-sample-c` that follow the app contract
-- [ ] 12. Phase 1 checkpoint: sample app runs as its own user in its cgroup; OOM is logged and the app restarted; stopping dootd leaves no processes
+- [x] 10. Temporary `dev-apps.toml` loader + `dootd serve` running supervised apps
+- [x] 11. Sample apps `examples/sample-zig` (Zig 0.16.0) and `examples/sample-c` (zig cc) that follow the app contract
+- [x] 12. Phase 1 checkpoint: sample app runs as its own user in its cgroup; OOM is logged and the app restarted; stopping dootd leaves no processes
+  - Automated: `scripts/e2e/phase1.sh` + `.github/workflows/e2e.yml` (Ubuntu 24.04 VM, 43 checks)
 
 ## Phase 2: Build and deploy
 

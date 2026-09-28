@@ -1,0 +1,5 @@
+contract    = 1
+zig_version = "0.16.0"
+build       = "zig build -Doptimize=ReleaseSafe"
+run         = "zig-out/bin/sample-zig"
+health_path = "/healthz"

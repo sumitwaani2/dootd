@@ -6,8 +6,8 @@ This plan builds dootd in phases. Each phase ends with something that works and 
 
 | Phase | Name | Outcome | Status |
 |---|---|---|---|
-| 0 | Foundations | Repo, CI, release pipeline, test VPS | 🟨 |
-| 1 | Run an app | Supervise a local binary with users, cgroups and logs | ⬜ |
+| 0 | Foundations | Repo, CI, release pipeline, test VPS | ✅ |
+| 1 | Run an app | Supervise a local binary with users, cgroups and logs | 🟨 |
 | 2 | Build and deploy | GitHub → Zig build → release → health-checked deploy and rollback | ⬜ |
 | 3 | Edge | :443, CF-only, Origin CA, AOP, host routing, DNS | ⬜ |
 | 4 | Dashboard | Login + the full click-to-deploy flow in the browser | ⬜ |
@@ -28,22 +28,22 @@ Phases 1–3 are mostly used through the CLI or a config file, so the risky part
   - Release on `v*` tags: build `dootd-linux-amd64` and `dootd-linux-arm64`, write `checksums.txt`, attach `install.sh`.
 - [x] `store` package: open SQLite (WAL, single writer) and run embedded numbered migrations.
 - [x] `secrets` package: load or create `master.key`, `Seal`/`Open` with AES-256-GCM.
-- [ ] A cheap Ubuntu 24.04 test VPS (1 GB) and a test Cloudflare zone.
+- [x] A cheap Ubuntu 24.04 test VPS (1 GB) and a test Cloudflare zone.
 
 **Done when:** tagging `v0.0.1` produces downloadable binaries that run `dootd version` on the VPS.
 
 ## Phase 1: Run an app
 
-- [ ] `cgroup`: find the delegated root, move self into `supervisor/`, create `apps/<app>`, set and read limits, `cgroup.kill`.
-- [ ] `users`: create or delete `dootd-<app>` and set up directory ownership (architecture §6, §10.1).
-- [ ] `supervisor`: start with `CgroupFD` + `Credential` + `Pdeathsig`, SIGTERM → 10 s → kill, the state machine, backoff and the crashed state.
-- [ ] Health check: TCP connect, then an HTTP GET to `health_path`.
-- [ ] `logs`: stdout/stderr → rotating file + ring buffer.
-- [ ] Contract env vars (`PORT`, `HOST`, `DATA_DIR`, `TMPDIR`, `DOOTD_*`) + user env.
-- [ ] Temporary dev config (`/etc/dootd/dev-apps.toml`) that defines an app using a prebuilt binary.
-- [ ] A **sample Zig app** repo (`dootd-sample-zig`) that follows the contract: SQLite in DATA_DIR, `/healthz`, SIGTERM handling. The same for C (`dootd-sample-c`, using the sqlite amalgamation and a Makefile).
+- [x] `cgroup`: find the delegated root, move self into `supervisor/`, create `apps/<app>`, set and read limits, kill by PID (not `cgroup.kill`, see architecture D10).
+- [x] `users`: create or delete `dootd-<app>` and set up directory ownership (architecture §6, §10.1).
+- [x] `supervisor`: start with `CgroupFD` + `Credential` + `Pdeathsig`, SIGTERM → 10 s → kill, the state machine, backoff and the crashed state.
+- [x] Health check: TCP connect, then an HTTP GET to `health_path`.
+- [x] `logs`: stdout/stderr → rotating file + ring buffer.
+- [x] Contract env vars (`PORT`, `HOST`, `DATA_DIR`, `TMPDIR`, `DOOTD_*`) + user env.
+- [x] Temporary dev config (`/etc/dootd/dev-apps.toml`) that defines an app using a prebuilt binary.
+- [x] A **sample Zig app** (`examples/sample-zig`, Zig 0.16.0) that follows the contract: SQLite in DATA_DIR, `/healthz`, SIGTERM handling. The same for C (`examples/sample-c`, using the sqlite amalgamation and a Makefile).
 
-**Done when:** the sample app runs as its own user inside its cgroup; `memory.max` causes an OOM kill that is logged and restarted; and stopping dootd leaves no stray processes behind.
+**Done when:** the sample app runs as its own user inside its cgroup; `memory.max` causes an OOM kill that is logged and restarted; and stopping dootd leaves no stray processes behind. Automated in `scripts/e2e/phase1.sh`, which runs on every PR on an Ubuntu 24.04 VM.
 
 ## Phase 2: Build and deploy
 

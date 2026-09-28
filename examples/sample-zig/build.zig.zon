@@ -1,0 +1,14 @@
+.{
+    .name = .sample_zig,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+    .fingerprint = 0x916f4730848578b0,
+    .dependencies = .{
+        // SQLite amalgamation (sqlite3.c + sqlite3.h), fetched by `zig build`.
+        .sqlite = .{
+            .url = "https://sqlite.org/2026/sqlite-amalgamation-3530400.zip",
+            .hash = "N-V-__8AAGVtrgCcOcmjrOJnagmnRyMrcKaOo09KbU-vu8w8",
+        },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src" },
+}
