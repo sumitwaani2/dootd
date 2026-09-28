@@ -19,6 +19,7 @@ import (
 	"github.com/sumitwaani2/dootd/internal/config"
 	"github.com/sumitwaani2/dootd/internal/control"
 	"github.com/sumitwaani2/dootd/internal/deployer"
+	"github.com/sumitwaani2/dootd/internal/edge"
 	"github.com/sumitwaani2/dootd/internal/layout"
 	"github.com/sumitwaani2/dootd/internal/secrets"
 	"github.com/sumitwaani2/dootd/internal/store"
@@ -116,7 +117,17 @@ func serve(log *slog.Logger, cfgPath string, cfgExplicit bool, devApps, socket s
 	runCtx, stop := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	ctl := &control.Server{Sup: sup, Dep: dep, Layout: lay, Log: log}
+	var edgeMgr *edge.Manager
+	edgeErr := make(chan error, 1)
+	if cfg.Edge.Listen != "off" {
+		if edgeMgr, err = startEdge(runCtx, log, cfg, st, box, sup, dep, edgeErr); err != nil {
+			return err
+		}
+	} else {
+		log.Warn("edge disabled (edge.listen = \"off\"): apps are only reachable on 127.0.0.1")
+	}
+
+	ctl := &control.Server{Sup: sup, Dep: dep, Edge: edgeMgr, Layout: lay, Log: log}
 	ctlErr := make(chan error, 1)
 	go func() { ctlErr <- ctl.Serve(runCtx, socket) }()
 	log.Info("control socket ready", "path", socket)
@@ -133,6 +144,13 @@ loop:
 		select {
 		case <-usr1:
 			logStatus(log, sup)
+		case err := <-edgeErr:
+			if err != nil {
+				stop()
+				dep.Stop()
+				sup.StopAll(context.Background())
+				return err
+			}
 		case err := <-ctlErr:
 			if err != nil {
 				log.Error("control socket failed", "err", err)
@@ -156,6 +174,54 @@ loop:
 	os.Remove(socket)
 	log.Info("all apps stopped; bye")
 	return nil
+}
+
+// startEdge builds the router from the registered apps and starts the
+// :443 listener and the Cloudflare sync loop.
+func startEdge(ctx context.Context, log *slog.Logger, cfg *config.Config, st *store.Store, box *secrets.Box,
+	sup *supervisor.Supervisor, dep *deployer.Deployer, errc chan<- error) (*edge.Manager, error) {
+	m, err := edge.NewManager(ctx, edge.Config{
+		Listen: cfg.Edge.Listen, DashboardHost: cfg.Edge.DashboardDomain,
+		PublicIPv4: cfg.Edge.PublicIPv4, PublicIPv6: cfg.Edge.PublicIPv6,
+		AOP: cfg.Edge.AOPEnabled(), APIBase: cfg.Edge.CloudflareAPI, DataRoot: cfg.DataRoot,
+	}, st, box, log)
+	if err != nil {
+		return nil, err
+	}
+	m.Router = &edge.Router{
+		Dashboard: edge.PlaceholderDashboard(), DashboardHost: cfg.Edge.DashboardDomain, Log: log,
+		State: func(name string) edge.Availability {
+			if dep.Deploying(name) {
+				return edge.Deploying
+			}
+			a := sup.Get(name)
+			if a == nil {
+				return edge.NotRunning
+			}
+			switch a.Status().State {
+			case supervisor.Running:
+				return edge.Available
+			case supervisor.Starting:
+				return edge.Starting
+			}
+			return edge.NotRunning
+		},
+	}
+	var routes []edge.Route
+	for _, a := range sup.Apps() {
+		sp := a.Spec()
+		if sp.Domain == "" {
+			continue
+		}
+		if sp.Domain == cfg.Edge.DashboardDomain {
+			return nil, fmt.Errorf("app %s uses the dashboard domain %s", sp.Name, sp.Domain)
+		}
+		routes = append(routes, edge.Route{Host: sp.Domain, App: sp.Name, Port: sp.Port})
+	}
+	m.SetRoutes(routes)
+	go func() { errc <- m.Serve(ctx) }()
+	m.Run(ctx)
+	return m, nil
 }
 
 func register(ctx context.Context, log *slog.Logger, sup *supervisor.Supervisor, dep *deployer.Deployer, la config.LoadedApp) error {

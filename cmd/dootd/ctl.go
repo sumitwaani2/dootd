@@ -17,6 +17,7 @@ import (
 
 	"github.com/sumitwaani2/dootd/internal/control"
 	"github.com/sumitwaani2/dootd/internal/deployer"
+	"github.com/sumitwaani2/dootd/internal/edge"
 )
 
 const ctlUsage = `dootd ctl - control a running dootd over its local socket (run as root)
@@ -34,6 +35,10 @@ Commands:
   start|stop|restart <app>      Control an app
   github-token                  Read a GitHub token from stdin and store it encrypted
                                 (empty input removes it)
+  cloudflare-token              Read a Cloudflare API token from stdin, verify and store it encrypted
+  edge                          Show TLS, DNS, AOP and Cloudflare status
+  edge sync                     Sync DNS records, certificates and AOP with Cloudflare now
+  edge set-strict <zone>        Set a zone's SSL/TLS mode to Full (strict)
 `
 
 type ctlClient struct {
@@ -135,6 +140,22 @@ func runCtl(args []string, stdout, stderr io.Writer) int {
 				fmt.Fprintln(stdout, "warning:", res["warning"])
 			}
 			return nil
+		case "cloudflare-token":
+			tok, err := io.ReadAll(io.LimitReader(bufio.NewReader(os.Stdin), 4096))
+			if err != nil {
+				return err
+			}
+			var res struct {
+				Result string   `json:"result"`
+				Zones  []string `json:"zones"`
+			}
+			if err := c.do(http.MethodPut, "/v1/settings/cloudflare-token", strings.NewReader(string(tok)), &res); err != nil {
+				return err
+			}
+			fmt.Fprintf(stdout, "%s; zones readable by the token: %s\n", res.Result, strings.Join(res.Zones, ", "))
+			return nil
+		case "edge":
+			return ctlEdge(c, rest, stdout)
 		case "help", "-h", "--help":
 			fmt.Fprint(stdout, ctlUsage)
 			return nil
@@ -154,7 +175,7 @@ func ctlStatus(c *ctlClient, out io.Writer) error {
 		return err
 	}
 	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "APP\tSTATE\tPORT\tRELEASE\tPID\tMEM\tRESTARTS\tSOURCE\tNOTE")
+	fmt.Fprintln(tw, "APP\tSTATE\tDOMAIN\tPORT\tRELEASE\tPID\tMEM\tRESTARTS\tREQS\tSOURCE\tNOTE")
 	for _, a := range apps {
 		src := "prebuilt"
 		if a.Deployable {
@@ -171,7 +192,7 @@ func ctlStatus(c *ctlClient, out io.Writer) error {
 		if rel == "" {
 			rel = "-"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%d\t%dM\t%d\t%s\t%s\n", a.Name, a.State, a.Port, rel, a.PID, a.MemBytes>>20, a.Restarts, src, note)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%d\t%dM\t%d\t%d\t%s\t%s\n", a.Name, a.State, orDash(a.Domain), a.Port, rel, a.PID, a.MemBytes>>20, a.Restarts, a.Requests, src, note)
 	}
 	return tw.Flush()
 }
@@ -328,4 +349,75 @@ func orDash(s string) string {
 		return "-"
 	}
 	return s
+}
+
+func ctlEdge(c *ctlClient, args []string, out io.Writer) error {
+	var st edge.Status
+	switch {
+	case len(args) == 0:
+		if err := c.do(http.MethodGet, "/v1/edge", nil, &st); err != nil {
+			return err
+		}
+		printEdge(out, st)
+		return nil
+	case args[0] == "sync" && len(args) == 1:
+		var res struct {
+			Status edge.Status `json:"status"`
+			Error  string      `json:"error"`
+		}
+		if err := c.do(http.MethodPost, "/v1/edge/sync", nil, &res); err != nil {
+			return err
+		}
+		printEdge(out, res.Status)
+		if res.Error != "" {
+			return errors.New("sync finished with errors:\n" + res.Error)
+		}
+		fmt.Fprintln(out, "sync OK")
+		return nil
+	case args[0] == "set-strict" && len(args) == 2:
+		var res map[string]string
+		if err := c.do(http.MethodPost, "/v1/edge/zones/"+args[1]+"/ssl-strict", nil, &res); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "%s: %s\n", args[1], res["result"])
+		return nil
+	}
+	return errors.New("usage: dootd ctl edge [sync | set-strict <zone>]")
+}
+
+func printEdge(out io.Writer, st edge.Status) {
+	fmt.Fprintf(out, "listen %s   dashboard %s   cloudflare token %s\n", st.Listen, orDash(st.Dashboard), map[bool]string{true: "set", false: "NOT SET"}[st.TokenSet])
+	fmt.Fprintf(out, "public IPv4 %s   IPv6 %s   Cloudflare ranges %d (%s)   rejected connections %d\n",
+		orDash(st.PublicIPv4), orDash(st.PublicIPv6), st.IPRanges, st.IPSource, st.Rejected)
+	if !st.LastSync.IsZero() {
+		fmt.Fprintf(out, "last sync %s\n", st.LastSync.Local().Format(time.DateTime))
+	}
+	fmt.Fprintln(out)
+	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "HOST\tAPP\tZONE\tDNS\tCERT UNTIL\tERROR")
+	for _, h := range st.Hosts {
+		until := "-"
+		if !h.CertUntil.IsZero() {
+			until = h.CertUntil.Format(time.DateOnly)
+		}
+		app := h.App
+		if app == "" {
+			app = "(dashboard)"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", h.Host, app, orDash(h.Zone), orDash(h.DNS), until, h.Error)
+	}
+	tw.Flush()
+	if len(st.Zones) > 0 {
+		fmt.Fprintln(out)
+		tw = tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(tw, "ZONE\tSSL MODE\tAOP\tWARNING / ERROR")
+		for _, z := range st.Zones {
+			note := z.Warning
+			if z.Error != "" {
+				note = strings.TrimSpace(note + " " + z.Error)
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", z.Name, orDash(z.SSLMode), z.AOP, note)
+		}
+		tw.Flush()
+	}
 }

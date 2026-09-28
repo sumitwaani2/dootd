@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sumitwaani2/dootd/internal/deployer"
+	"github.com/sumitwaani2/dootd/internal/edge"
 	"github.com/sumitwaani2/dootd/internal/github"
 	"github.com/sumitwaani2/dootd/internal/layout"
 	"github.com/sumitwaani2/dootd/internal/logs"
@@ -32,6 +33,7 @@ const DefaultSocket = "/run/dootd/dootd.sock"
 type Server struct {
 	Sup    *supervisor.Supervisor
 	Dep    *deployer.Deployer
+	Edge   *edge.Manager // nil when the edge is disabled
 	Layout layout.Layout
 	Log    *slog.Logger
 }
@@ -41,6 +43,7 @@ type AppView struct {
 	Name       string    `json:"name"`
 	Type       string    `json:"type"`
 	Port       int       `json:"port"`
+	Domain     string    `json:"domain,omitempty"`
 	State      string    `json:"state"`
 	PID        int       `json:"pid"`
 	Release    string    `json:"release"`
@@ -55,6 +58,8 @@ type AppView struct {
 	Subdir     string    `json:"path,omitempty"`
 	Pending    int64     `json:"pending_deployment,omitempty"`
 	MemBytes   int64     `json:"mem_bytes"`
+	Requests   int64     `json:"requests"`
+	Status5xx  int64     `json:"requests_5xx"`
 }
 
 // Serve listens on path until ctx ends.
@@ -82,6 +87,10 @@ func (s *Server) Serve(ctx context.Context, path string) error {
 	mux.HandleFunc("GET /v1/deployments/{id}", s.deployment)
 	mux.HandleFunc("GET /v1/deployments/{id}/log", s.deploymentLog)
 	mux.HandleFunc("PUT /v1/settings/github-token", s.githubToken)
+	mux.HandleFunc("PUT /v1/settings/cloudflare-token", s.cloudflareToken)
+	mux.HandleFunc("GET /v1/edge", s.edgeStatus)
+	mux.HandleFunc("POST /v1/edge/sync", s.edgeSync)
+	mux.HandleFunc("POST /v1/edge/zones/{zone}/ssl-strict", s.edgeStrict)
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		<-ctx.Done()
@@ -116,10 +125,14 @@ func (s *Server) app(w http.ResponseWriter, r *http.Request) *supervisor.App {
 
 func (s *Server) apps(w http.ResponseWriter, _ *http.Request) {
 	var out []AppView
+	var stats map[string]edge.StatsSnapshot
+	if s.Edge != nil {
+		stats = s.Edge.Router.Stats()
+	}
 	for _, a := range s.Sup.Apps() {
 		sp, st := a.Spec(), a.Status()
 		v := AppView{
-			Name: sp.Name, Type: string(sp.Type), Port: sp.Port, State: string(st.State), PID: st.PID,
+			Name: sp.Name, Type: string(sp.Type), Port: sp.Port, Domain: sp.Domain, State: string(st.State), PID: st.PID,
 			Release: st.Release, Restarts: st.Restarts, OOMKills: st.OOMKills, LastExit: st.LastExit,
 			LastError: st.LastError, HealthyAt: st.HealthyAt,
 		}
@@ -129,6 +142,9 @@ func (s *Server) apps(w http.ResponseWriter, _ *http.Request) {
 		}
 		if gs, err := a.Group().Stats(); err == nil {
 			v.MemBytes = gs.MemoryCurrent
+		}
+		if rs, ok := stats[sp.Name]; ok {
+			v.Requests, v.Status5xx = rs.Requests, rs.Status[5]
 		}
 		out = append(out, v)
 	}
@@ -358,4 +374,64 @@ func (s *Server) githubToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"result": "saved (encrypted); token belongs to " + info.Login})
+}
+
+func (s *Server) needEdge(w http.ResponseWriter) bool {
+	if s.Edge == nil {
+		writeErr(w, http.StatusConflict, errors.New(`the edge is disabled (edge.listen = "off")`))
+		return false
+	}
+	return true
+}
+
+func (s *Server) cloudflareToken(w http.ResponseWriter, r *http.Request) {
+	if !s.needEdge(w) {
+		return
+	}
+	b, err := io.ReadAll(io.LimitReader(r.Body, 4096))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	zones, err := s.Edge.SetToken(ctx, strings.TrimSpace(string(b)))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("token not saved: %w", err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"result": "saved (encrypted)", "zones": zones})
+}
+
+func (s *Server) edgeStatus(w http.ResponseWriter, r *http.Request) {
+	if s.needEdge(w) {
+		writeJSON(w, http.StatusOK, s.Edge.Status(r.Context()))
+	}
+}
+
+func (s *Server) edgeSync(w http.ResponseWriter, r *http.Request) {
+	if !s.needEdge(w) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+	defer cancel()
+	st, err := s.Edge.Sync(ctx)
+	resp := map[string]any{"status": st}
+	if err != nil {
+		resp["error"] = err.Error()
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) edgeStrict(w http.ResponseWriter, r *http.Request) {
+	if !s.needEdge(w) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+	defer cancel()
+	if err := s.Edge.SetStrict(ctx, r.PathValue("zone")); err != nil {
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"result": "SSL/TLS mode set to Full (strict)"})
 }
