@@ -66,19 +66,22 @@ Tasks are grouped by the phases in `docs/implementation-plan.md`. Each phase end
 
 ## Phase 2: Build and deploy
 
-- [ ] 13. `github` client: PAT validation, branch HEAD SHA, go-git shallow clone with in-memory auth
+- [x] 13. `github` client: PAT validation, branch HEAD SHA, go-git shallow clone with in-memory auth
   - _Requirements: 6.1, 9.2_
-- [ ] 14. `dootd.toml` parser and validator with complete error reporting
+- [x] 14. `dootd.toml` parser and validator with complete error reporting
   - _Requirements: 8.1_
   - [ ]* 14.1 Unit and fuzz tests for the parser
-- [ ] 15. `toolchain`: index.json, download, SHA-256 verification, safe tar.xz extraction, atomic install, list/delete
+- [x] 15. `toolchain`: index.json, download, SHA-256 verification, safe tar.xz extraction, atomic install, list/delete
   - _Requirements: 8.2, 8.3_
-- [ ] 16. `builder`: build cgroup, app user, PATH/CC/CXX, timeout, live build log, keep 20 logs
+- [x] 16. `builder`: build cgroup, app user, PATH/CC/CXX, timeout, live build log, keep 20 logs
   - _Requirements: 8.4, 8.6_
-- [ ] 17. `deployer`: global queue, pipeline (architecture §11), `current` symlink swap, health-check rollback, keep 3 releases, deploy history
+- [x] 17. `deployer`: global queue, pipeline (architecture §11), `current` symlink swap, health-check rollback, keep 3 releases, deploy history
   - _Requirements: 8.5, 9.2, 9.3, 9.4, 9.5, 9.6_
   - [ ]* 17.1 State machine tests with fake builder and supervisor
-- [ ] 18. Phase 2 checkpoint: both samples deploy with their pinned Zig version; a broken commit leaves the old version serving; a failed health check rolls back
+- [x] 17b. `dootd ctl` + control socket (deploy, rollback, status, releases, deployments, logs, start/stop/restart, github-token)
+  - _Requirements: 9.1, 9.5, 9.6_
+- [x] 18. Phase 2 checkpoint: both samples deploy with their pinned Zig version; a broken commit leaves the old version serving; a failed health check rolls back
+  - Automated: `scripts/e2e/phase2.sh` (Ubuntu 24.04 VM, 64 checks)
 
 ## Phase 3: Edge
 
