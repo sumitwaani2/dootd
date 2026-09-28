@@ -186,7 +186,7 @@ check "error mentions the build exit code" last_has "build failed with exit code
 check "still serving R1" page_has 20002 "Release: $R1<"
 check "same process kept running" test "$(app_pid sample-c)" = "$PID1"
 git -C "$WORK" revert --no-edit HEAD >/dev/null
-  git -C "$WORK" push -q origin HEAD
+git -C "$WORK" push -q origin HEAD
 
 say "Unhealthy release: automatic rollback"
 sed -i 's|health_path *= *"[^"]*"|health_path = "/does-not-exist"|' "$WORK/dootd.toml"
@@ -197,7 +197,7 @@ check "R1 serving again" wait_for 10 page_has 20002 "Release: $R1<"
 check "data survived the failed deploy" visits_ok
 check "failed release was removed" test "$(nreleases sample-c)" -eq 1
 git -C "$WORK" revert --no-edit HEAD >/dev/null
-  git -C "$WORK" push -q origin HEAD
+git -C "$WORK" push -q origin HEAD
 
 say "Successful deploys, data persistence and pruning to 3 releases"
 for v in 2 3 4; do
@@ -256,7 +256,10 @@ check "queued deploy runs after the slow one" wait_for 180 queued_done
 say "dootd restart during a build"
 RBEFORE="$(current sample-c)"
 set_title "sample-c v5"
-commit "v5"
+# Builds are cached (about 1 s now), so make this one slow enough to interrupt.
+sed -i 's|^build *=.*|build = "sleep 60; make"|' "$WORK/dootd.toml"
+grep -q '^build' "$WORK/dootd.toml" || echo 'build = "sleep 60; make"' >> "$WORK/dootd.toml"
+commit "v5 (slow build)"
 ctl deploy sample-c --detach > "$OUT/interrupted.txt"
 IID="$(grep -oE '#[0-9]+' "$OUT/interrupted.txt" | tr -d '#')"
 sleep 2

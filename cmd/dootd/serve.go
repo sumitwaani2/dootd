@@ -105,7 +105,7 @@ func serve(log *slog.Logger, cfgPath string, cfgExplicit bool, devApps, socket s
 			return err
 		}
 		for _, la := range apps {
-			if err := register(ctx, sup, dep, la); err != nil {
+			if err := register(ctx, log, sup, dep, la); err != nil {
 				return err
 			}
 		}
@@ -158,12 +158,12 @@ loop:
 	return nil
 }
 
-func register(ctx context.Context, sup *supervisor.Supervisor, dep *deployer.Deployer, la config.LoadedApp) error {
+func register(ctx context.Context, log *slog.Logger, sup *supervisor.Supervisor, dep *deployer.Deployer, la config.LoadedApp) error {
 	if !la.Deployable() {
 		if _, err := sup.Add(la.Spec); err != nil {
 			return err
 		}
-		slog.Info("prebuilt app registered", "app", la.Spec.Name, "port", la.Spec.Port, "release_dir", la.Spec.ReleaseDir)
+		log.Info("prebuilt app registered", "app", la.Spec.Name, "port", la.Spec.Port, "release_dir", la.Spec.ReleaseDir)
 		return nil
 	}
 	a, err := dep.Register(ctx, deployer.AppConfig{
@@ -177,7 +177,7 @@ func register(ctx context.Context, sup *supervisor.Supervisor, dep *deployer.Dep
 	if rel == "" {
 		rel = "none (deploy with: dootd ctl deploy " + la.Spec.Name + ")"
 	}
-	slog.Info("app registered", "app", la.Spec.Name, "port", la.Spec.Port, "repo", la.Repo.URL, "branch", la.Branch, "release", rel)
+	log.Info("app registered", "app", la.Spec.Name, "port", la.Spec.Port, "repo", la.Repo.URL, "branch", la.Branch, "release", rel)
 	return nil
 }
 
