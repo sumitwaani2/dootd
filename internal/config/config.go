@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -29,7 +30,27 @@ type Config struct {
 	// "the cgroup dootd runs in" (the systemd-delegated dootd.service cgroup).
 	CgroupRoot string `toml:"cgroup_root"`
 
-	Edge Edge `toml:"edge"`
+	Edge    Edge    `toml:"edge"`
+	Backups Backups `toml:"backups"`
+}
+
+// Backups configures the backup schedule (docs/architecture.md §12).
+type Backups struct {
+	Interval  Duration `toml:"interval"`  // default 3h
+	Retention Duration `toml:"retention"` // default 48h
+}
+
+// Duration is a time.Duration written like "3h" in TOML.
+type Duration struct{ time.Duration }
+
+// UnmarshalText parses a Go duration string.
+func (d *Duration) UnmarshalText(b []byte) error {
+	v, err := time.ParseDuration(string(b))
+	if err != nil {
+		return err
+	}
+	d.Duration = v
+	return nil
 }
 
 // Edge configures the public HTTPS listener (docs/architecture.md §9).
@@ -64,6 +85,10 @@ func Load(path string, mustExist bool) (*Config, error) {
 		if !filepath.IsAbs(p) {
 			return nil, fmt.Errorf("config: %s must be an absolute path, got %q", name, p)
 		}
+	}
+	if b := c.Backups; (b.Interval.Duration != 0 && b.Interval.Duration < 10*time.Second) ||
+		(b.Retention.Duration != 0 && b.Retention.Duration < b.Interval.Duration) {
+		return nil, fmt.Errorf("config: backups.interval must be at least 10s and backups.retention at least the interval")
 	}
 	if c.Edge.Listen == "" {
 		c.Edge.Listen = ":443"

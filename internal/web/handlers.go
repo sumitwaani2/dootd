@@ -11,6 +11,7 @@ import (
 
 	"github.com/sumitwaani2/dootd/internal/apps"
 	"github.com/sumitwaani2/dootd/internal/auth"
+	"github.com/sumitwaani2/dootd/internal/backup"
 	"github.com/sumitwaani2/dootd/internal/deployer"
 	"github.com/sumitwaani2/dootd/internal/edge"
 	"github.com/sumitwaani2/dootd/internal/github"
@@ -84,6 +85,8 @@ type AppRow struct {
 	Requests      int64
 	Requests5xx   int64
 	LastDeployErr string
+	BackupProblem string
+	LastBackup    time.Time
 }
 
 func (s *Server) appRows(ctx context.Context) ([]AppRow, error) {
@@ -108,6 +111,12 @@ func (s *Server) appRows(ctx context.Context) ([]AppRow, error) {
 		row.NeedsRestart = s.Dep.NeedsRestart(a.Name)
 		if st, ok := stats[a.Name]; ok {
 			row.Requests, row.Requests5xx = st.Requests, st.Status[5]
+		}
+		if s.Backups != nil {
+			row.BackupProblem = s.Backups.Problem(ctx, a.Name)
+			if b, ok := s.Backups.Latest(ctx, a.Name); ok && b.Status == backup.StatusOK {
+				row.LastBackup = b.CreatedAt
+			}
 		}
 		rows = append(rows, row)
 	}
@@ -137,7 +146,21 @@ func (s *Server) warnings(ctx context.Context, rows []AppRow) []string {
 			}
 		}
 	}
+	if s.Backups != nil {
+		if _, ok, _ := s.Backups.S3Config(ctx); !ok {
+			ws = append(ws, "No S3 bucket is set, so backups are only kept on this server. Add R2 or another S3-compatible bucket in Settings.")
+		}
+		if _, ok, _ := s.Store.GetSetting(ctx, backup.SettingKitSaved); !ok {
+			ws = append(ws, "Download the recovery kit (Settings → Backups) and keep it somewhere safe: without the master key in it, backups of dootd's own settings cannot be decrypted.")
+		}
+		if p := s.Backups.Problem(ctx, backup.SelfApp); p != "" {
+			ws = append(ws, "dootd.db: "+p)
+		}
+	}
 	for _, r := range rows {
+		if r.BackupProblem != "" {
+			ws = append(ws, r.Name+": "+r.BackupProblem)
+		}
 		switch {
 		case r.Status.State == supervisor.Crashed:
 			ws = append(ws, r.Name+" has crashed and is not being restarted: "+r.Status.LastError)
@@ -236,6 +259,11 @@ func (s *Server) appPage(w http.ResponseWriter, r *http.Request) {
 		data["Releases"], _ = s.Dep.Releases(r.Context(), name)
 		deps, _ := s.Dep.Deployments(r.Context(), name, 10)
 		data["Deployments"] = deps
+		if s.Backups != nil {
+			data["Backups"], _ = s.Backups.List(r.Context(), name)
+			_, data["S3Set"], _ = s.Backups.S3Config(r.Context())
+			data["Policy"] = s.policyText()
+		}
 		data["Edit"] = apps.Input{
 			Repo: full.Repo, Branch: full.Branch, Path: full.Path, Domain: full.Domain,
 			Memory: humanLimit(full.Limits.MemoryMax), CPU: strconv.FormatFloat(full.Limits.CPUMax, 'f', -1, 64),
@@ -326,7 +354,7 @@ func (s *Server) deleteApp(w http.ResponseWriter, r *http.Request) {
 		redirect(w, r, "/apps/"+name+"#danger", errors.New("type the app name exactly to confirm deletion"), "")
 		return
 	}
-	res, err := s.Apps.Delete(r.Context(), name, r.PostFormValue("keep_data") == "1")
+	res, err := s.Apps.Delete(r.Context(), name, r.PostFormValue("keep_data") == "1", r.PostFormValue("delete_backups") == "1")
 	if err != nil {
 		redirect(w, r, "/apps/"+name+"#danger", err, "")
 		return
@@ -334,6 +362,11 @@ func (s *Server) deleteApp(w http.ResponseWriter, r *http.Request) {
 	msg := name + " deleted."
 	if res.KeptData != "" {
 		msg += " Its data was kept in " + res.KeptData + "."
+	}
+	if res.DeletedBackups {
+		msg += " Its backups were deleted."
+	} else if r.PostFormValue("delete_backups") != "1" {
+		msg += " Its backups were kept."
 	}
 	if len(res.Warnings) > 0 {
 		msg += " Some cleanup steps failed: " + strings.Join(res.Warnings, "; ")
@@ -402,6 +435,22 @@ func (s *Server) settingsPage(w http.ResponseWriter, r *http.Request) {
 		list = append(list, tc{t, pins[t.Version]})
 	}
 	data["Toolchains"] = list
+	if s.Backups != nil {
+		if c, ok, err := s.Backups.S3Config(ctx); err == nil && ok {
+			c.SecretKey = ""
+			data["S3"], data["S3Set"] = c, true
+		}
+		if v, ok, _ := s.Store.GetSetting(ctx, backup.SettingKitSaved); ok {
+			data["KitSaved"] = string(v)
+		}
+		data["HostID"] = s.Backups.HostID()
+		data["Policy"] = s.policyText()
+		self, _ := s.Backups.List(ctx, backup.SelfApp)
+		if len(self) > 5 {
+			self = self[:5]
+		}
+		data["SelfBackups"] = self
+	}
 	s.render(w, r, http.StatusOK, "settings", "Settings", "settings", data)
 }
 

@@ -21,6 +21,7 @@ import (
 
 	"github.com/sumitwaani2/dootd/internal/apps"
 	"github.com/sumitwaani2/dootd/internal/auth"
+	"github.com/sumitwaani2/dootd/internal/backup"
 	"github.com/sumitwaani2/dootd/internal/deployer"
 	"github.com/sumitwaani2/dootd/internal/edge"
 	"github.com/sumitwaani2/dootd/internal/layout"
@@ -49,10 +50,13 @@ type Server struct {
 	Edge    *edge.Manager // nil when the edge is disabled
 	Zig     *toolchain.Zig
 	Store   *store.Store
-	Layout  layout.Layout
-	Host    string // dashboard hostname
-	Version string
-	Log     *slog.Logger
+	Backups *backup.Service
+	// MasterKeyPath is included in the recovery kit.
+	MasterKeyPath string
+	Layout        layout.Layout
+	Host          string // dashboard hostname
+	Version       string
+	Log           *slog.Logger
 
 	pages map[string]*template.Template
 }
@@ -92,6 +96,10 @@ func (s *Server) Handler() (http.Handler, error) {
 	authed("POST /apps/{app}/env", s.setEnv)
 	authed("POST /apps/{app}/env/delete", s.deleteEnv)
 	authed("POST /apps/{app}/delete", s.deleteApp)
+	authed("POST /apps/{app}/backup", s.backupNow)
+	authed("POST /apps/{app}/restore", s.restoreBackup)
+	authed("POST /settings/s3", s.setS3)
+	authed("POST /settings/recovery-kit", s.recoveryKit)
 	authed("GET /apps/{app}/logs", s.logsPage)
 	authed("GET /apps/{app}/logs/stream", s.logsStream)
 	authed("GET /deployments/{id}", s.deploymentPage)

@@ -46,11 +46,12 @@ post() {
 post_is() { local want="$1"; shift; local got; got="$(post "$@")"; [[ "$got" == "$want"* ]]; }
 post_eq() { local want="$1"; shift; [ "$(post "$@")" = "$want" ]; }
 refresh_csrf() { CSRF="$(get "${1:-/account}" | grep -oE 'name="csrf" value="[^"]+"' | head -n1 | sed 's/.*value="//; s/"$//')"; [ -n "$CSRF" ]; }
-page_has()  { get "$1" | grep -qF -- "$2"; }
-page_lacks() { ! get "$1" | grep -qF -- "$2"; }
-flash_has() { get "${2:-/account}" | grep -qF -- "$1"; }
+# Capture first: `curl | grep -q` fails under pipefail when grep exits early.
+page_has()  { local b; b="$(get "$1")" || return 1; grep -qF -- "$2" <<<"$b"; }
+page_lacks() { local b; b="$(get "$1")" || return 1; ! grep -qF -- "$2" <<<"$b"; }
+flash_has() { local b; b="$(get "${2:-/account}")" || return 1; grep -qF -- "$1" <<<"$b"; }
 site()      { curl -sS -m 10 "${TLS[@]}" "https://$APP_HOST/"; }
-site_has()  { site | grep -qF -- "$1"; }
+site_has()  { local b; b="$(site)" || return 1; grep -qF -- "$1" <<<"$b"; }
 site_code() { curl -sS -m 10 -o /dev/null -w '%{http_code}' "${TLS[@]}" "https://$APP_HOST/"; }
 site_code_is() { [ "$(site_code)" = "$1" ]; }
 mock_py()   { curl -fsS http://127.0.0.1:8787/_mock/state | python3 -c "import json,sys; s=json.load(sys.stdin); $1"; }

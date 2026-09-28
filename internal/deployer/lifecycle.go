@@ -23,6 +23,26 @@ func (d *Deployer) busy(name string) error {
 	return nil
 }
 
+// Reserve blocks deployments of an app (e.g. during a restore) until the
+// returned release function is called. It fails if a deployment is
+// queued or running.
+func (d *Deployer) Reserve(name, reason string) (func(), error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if id, ok := d.pending[name]; ok {
+		return nil, fmt.Errorf("%w (#%d); try again when it has finished", ErrBusy, id)
+	}
+	if why, ok := d.held[name]; ok {
+		return nil, fmt.Errorf("%s is already in progress", why)
+	}
+	d.held[name] = reason
+	return func() {
+		d.mu.Lock()
+		delete(d.held, name)
+		d.mu.Unlock()
+	}, nil
+}
+
 // UpdateConfig replaces an app's configuration. It applies to the next
 // build and the next (re)start; running processes are not touched.
 func (d *Deployer) UpdateConfig(cfg AppConfig) error {
@@ -101,6 +121,21 @@ func (d *Deployer) Start(ctx context.Context, name string) error {
 		return err
 	}
 	return d.SetDesired(ctx, name, true)
+}
+
+// StartReserved is Start for callers holding a Reserve (restores).
+func (d *Deployer) StartReserved(ctx context.Context, name string) error {
+	a := d.Supervisor.Get(name)
+	if a == nil {
+		return fmt.Errorf("unknown app %q", name)
+	}
+	switch a.Status().State {
+	case supervisor.Stopped, supervisor.Crashed:
+		if err := d.apply(ctx, name, a); err != nil {
+			return err
+		}
+	}
+	return a.Start(ctx)
 }
 
 // StopApp stops an app and keeps it stopped across dootd restarts.

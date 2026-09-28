@@ -119,7 +119,9 @@ internal/
     tmp/                                  TMPDIR  (0700, app user)
     logs/app.log[.1..3]                   runtime logs (rotated)
     logs/builds/<release-id>.log          build logs
-  backups/staging/                        temp snapshot files before upload
+  backups/staging/                        temporary snapshots and downloads (emptied at startup)
+  backups/local/<app>/                    newest archives (<time>-<kind>-<id>.tar.zst), _dootd/ for dootd.db
+  deleted/<app>-<time>/data/              data kept when an app is deleted
 ```
 
 The last **3 releases** are kept for instant rollback. Older ones are deleted after a successful deploy.
@@ -136,7 +138,7 @@ The last **3 releases** are kept for instant rollback. Older ones are deleted af
 | `deployments` | id, app, kind (deploy/rollback), status (queued/building/deploying/succeeded/failed), release_id, git_sha, error, created/started/finished_at |
 | `releases` | app, id, git_sha, subject, branch, subdir, zig_version, run (JSON argv), health_path, created_at (only kept releases) |
 | `app_state` | app, desired_state (running/stopped) |
-| `backups` | id, app_id, object_key, kind (scheduled/pre-deploy/manual), size, created_at, status |
+| `backups` | id, app (`_dootd` = dootd.db), kind, status (running/ok/failed), object_key, local_path, size, sha256, files, release_id, error, created_at, finished_at |
 | `certs` | hostname, cf_cert_id, not_after |
 | `metrics_1m` | ts, scope (host/app id), cpu, mem, pids, rx/tx, req_count, req_5xx, p50/p95 ms |
 | `schema_migrations` | version |
@@ -325,31 +327,38 @@ Deploy clicked (Phase 2: `dootd ctl deploy <app>`)
 
 ## 12. Backups
 
-| Setting | Default |
+| Setting | Default (`[backups]` in config.toml) |
 |---|---|
-| Schedule | every **3 h** (00:00, 03:00, … server time) |
-| Also | before every deploy/rollback, and manual "Backup now" |
-| Retention | **48 h** for all kinds. The newest backup of each app is always kept, even if it's older. |
-| Target | any S3-compatible storage (R2, B2, MinIO, AWS) configured with endpoint, region, bucket, key and secret |
+| Schedule | every **3 h**, aligned to UTC (00:00, 03:00, …): `interval = "3h"` |
+| Also | before every deploy/rollback, and "Back up now" (dashboard, `dootd ctl backup <app>`) |
+| Retention | **48 h** for all kinds (`retention = "48h"`); the newest backup of each app is always kept |
+| Local copies | the newest **2** archives per app stay on the server; while a bucket is configured, archives not uploaded yet are also kept until the retention ends |
+| Target | any S3-compatible storage (R2, B2, MinIO, AWS) configured in Settings: endpoint, region (`auto` for R2), bucket, prefix (`dootd`), access key, secret |
 
-**Snapshot**: for each file in `DATA_DIR` that starts with the SQLite header (`SQLite format 3\0`), dootd opens it with `modernc.org/sqlite` (`busy_timeout=10000`) and runs `VACUUM INTO 'backups/staging/<file>'`. This produces a consistent, compacted copy while the app keeps running, and it works in WAL mode. Each copy is then checked with `PRAGMA quick_check`.
+**S3 settings** are stored sealed (`settings:s3`) and only saved after a test upload, read-back and delete succeeds. The secret is never shown again; saving the form with an empty secret keeps the old one. Requests use path-style addressing and SigV4 (minio-go).
 
-**Archive**: `tar` + `zstd` → `dootd/<host-id>/<app>/<UTC-timestamp>-<kind>.tar.zst`, along with a small JSON manifest (files, sizes, sha256, release id, dootd version). The upload is multipart, retried 3 times with backoff, and staging files are deleted afterwards.
+**What is backed up**: every file under `DATA_DIR` that starts with the SQLite header (`SQLite format 3\0`), whatever its name, including sub-folders; `-wal`, `-shm`, `-journal` files and `.pre-restore-*` folders are skipped. If there are none, nothing is recorded (a pre-deploy backup logs "nothing to back up yet").
 
-**Retention**: after each run, dootd lists the app prefix and deletes objects older than 48 h, except the newest one. This is done by dootd itself, not by bucket lifecycle rules, so it behaves the same on every provider.
+**Snapshot**: dootd (root) opens each database with `busy_timeout=10000` and runs `VACUUM INTO '<staging>/…'`: a consistent, compacted copy taken while the app keeps writing. Each copy is checked with `PRAGMA quick_check`. If dootd's connection makes SQLite create `-wal`/`-shm` files, they are chowned back to the database owner so the app can still open the database.
 
-**Restore** (dashboard, per backup):
-1. Download and verify the checksums from the manifest.
-2. Stop the app.
-3. Move the current DB files, including `-wal` and `-shm`, to `data/.pre-restore-<ts>/`.
-4. Put the restored files in place and chown them to the app user.
-5. Start the app and run the health check.
+**Archive**: `tar` (first entry `manifest.json`: version, app, kind, time, release, dootd version, and path/size/SHA-256 of every database; then `data/<path>`) compressed with zstd, written to `backups/local/<app>/<UTC time>-<kind>-<id>.tar.zst`. The archive's SHA-256 is stored in the `backups` row.
 
-The last 2 `.pre-restore` folders are kept.
+**Upload**: `<prefix>/<host id>/<app>/<same name>` (host id: 12 random hex characters generated once, stored in `settings`). Scheduled and manual backups upload before returning; pre-deploy backups upload in the background so deploy downtime only includes the snapshot. 3 attempts with backoff; a failed upload is retried after every scheduled run (and when S3 settings are saved) until it succeeds or the retention ends.
 
-**dootd's own state**: `dootd.db` is backed up daily to `dootd/<host-id>/_dootd/`. Secrets inside it are encrypted, so **the master key is required to use it**. The dashboard's Settings page lets you download a *recovery kit* (the master key plus config), and it reminds you until you have downloaded it once.
+**Retention**: after each upload dootd lists the app's prefix, reads the time from each key and deletes objects older than the retention except the newest. It is done by dootd itself, not bucket lifecycle rules, so it behaves the same everywhere. Rows without any copy left, and failed rows older than the retention, are removed.
 
-**Failure visibility**: a failed backup shows a red badge on the app and on the dashboard home page.
+**Restore** (dashboard button, `dootd ctl restore <app> <id>`):
+1. Block deployments of the app for the duration (refused if one is queued or running).
+2. Take the local copy if its SHA-256 still matches, otherwise download from the bucket and check the SHA-256 against the row.
+3. Unpack into staging, check every file against the manifest (size, SHA-256, safe paths) and run `quick_check`. **Any failure stops here; the app is not touched.**
+4. Stop the app, move the current databases and their `-wal`/`-shm`/`-journal` files to `DATA_DIR/.pre-restore-<UTC time>/`, copy the restored files in (write + fsync + rename), give them to the app user.
+5. Start the app again if it was running.
+
+The last 2 `.pre-restore-*` folders are kept.
+
+**dootd's own state**: `dootd.db` is copied with `VACUUM INTO` at startup and then daily, zstd-compressed, kept locally (2) and uploaded to `<prefix>/<host id>/_dootd/` (kept 7 days). Secrets inside it are sealed, so **the master key is needed to use it**. Settings → Backups → *Download recovery kit* (a POST with CSRF token) gives a text file with the master key, host id and bucket location (not the S3 secret). The dashboard asks for it until it has been downloaded once. Restoring a whole server from the kit is Phase 7 work (`dootd init --restore`).
+
+**Visibility**: the app page lists backups (time, kind, status, size, bucket/server, release, Restore button); the home page shows the last backup time per app, a *backup failed* badge when the latest backup failed or could not be uploaded (a backup whose upload is still being retried does not hide an earlier problem), and warnings when no bucket is set or the recovery kit was never downloaded. Deleting an app keeps its backups unless "Also delete its backups" is ticked.
 
 ## 13. Monitoring
 
@@ -428,3 +437,6 @@ The last 2 `.pre-restore` folders are kept.
 | D19 | The admin is created over SSH (`dootd ctl admin set-password`), never through a web setup page | A public first-run page could be claimed by whoever reaches it first |
 | D20 | Config changes apply on restart/deploy, never silently to a running app | Predictable; the dashboard shows "restart needed" |
 | D21 | Deleting an app keeps its data by default (moved aside) | Deletion is one click; losing a database should not be |
+| D22 | Keep the newest archives on the server as well as in the bucket | Restores work without the bucket (and without a bucket at all), and an outage loses nothing |
+| D23 | Verify a backup completely before stopping the app | A broken or tampered backup can never cost uptime or data |
+| D24 | Backup interval and retention are settings (`[backups]`) | Lower RPO when needed; the tests use 30 s |

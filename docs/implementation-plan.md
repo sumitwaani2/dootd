@@ -11,7 +11,7 @@ This plan builds dootd in phases. Each phase ends with something that works and 
 | 2 | Build and deploy | GitHub → Zig build → release → health-checked deploy and rollback | ✅ |
 | 3 | Edge | :443, CF-only, Origin CA, AOP, host routing, DNS | ✅ |
 | 4 | Dashboard | Login + the full click-to-deploy flow in the browser | ✅ |
-| 5 | Backups | Scheduled, pre-deploy and manual backups to S3/R2, plus restore | ⬜ |
+| 5 | Backups | Scheduled, pre-deploy and manual backups to S3/R2, plus restore | ✅ |
 | 6 | Monitoring | Host and app metrics, request stats, charts, warnings | ⬜ |
 | 7 | Install and self-update → v1.0 | One-line install, `dootd init`, update from the UI, hardening | ⬜ |
 
@@ -83,17 +83,17 @@ Phases 1–3 are mostly used through the CLI or a config file, so the risky part
 
 ## Phase 5: Backups
 
-- [ ] `s3` wrapper: put (multipart), list, get, delete, and a connection test.
-- [ ] Settings page: S3 endpoint, bucket, keys (sealed), with a test upload and delete (moved from Phase 4).
-- [ ] Snapshot using SQLite header detection + `VACUUM INTO` + `quick_check`.
-- [ ] Archive (tar+zstd) + manifest + upload with retries.
-- [ ] Scheduler: every 3 h, manual "Backup now", and the pre-deploy hook in the deployer.
-- [ ] Retention: 48 h, always keeping the newest backup.
-- [ ] Restore flow with a `.pre-restore` safety copy.
-- [ ] Daily backup of `dootd.db` + recovery kit download + reminder.
-- [ ] Backup status and failure badges in the UI.
+- [x] `s3` wrapper: put (multipart), list, get, delete, and a connection test.
+- [x] Settings page: S3 endpoint, bucket, keys (sealed), with a test upload and delete (moved from Phase 4).
+- [x] Snapshot using SQLite header detection + `VACUUM INTO` + `quick_check`.
+- [x] Archive (tar+zstd) + manifest + upload with retries.
+- [x] Scheduler: every 3 h, manual "Backup now", and the pre-deploy hook in the deployer.
+- [x] Retention: 48 h, always keeping the newest backup.
+- [x] Restore flow with a `.pre-restore` safety copy.
+- [x] Daily backup of `dootd.db` + recovery kit download + reminder.
+- [x] Backup status and failure badges in the UI.
 
-**Done when:** writes to the sample app survive a "delete the data dir, then restore" test; retention deletes old objects on R2; and a backup taken during heavy writes passes `integrity_check`.
+**Done when:** writes to the sample app survive a "delete the data dir, then restore" test; retention deletes old objects on R2; and a backup taken during heavy writes passes `integrity_check`. Automated in `scripts/e2e/phase5.sh` (55 checks, `rclone serve s3` as the bucket).
 
 ## Phase 6: Monitoring
 
@@ -108,7 +108,8 @@ Phases 1–3 are mostly used through the CLI or a config file, so the risky part
 
 - [ ] `install.sh`: OS, cgroup and architecture checks; download + checksum; `make`; directories; master key; systemd unit; optional swapfile; optional ufw.
 - [ ] `dootd init` (interactive): admin, dashboard domain, CF token, IP detection → DNS, certificate and AOP for the dashboard → start the service.
-- [ ] `dootd reset-password`.
+- [x] `dootd reset-password` (done in Phase 4).
+- [ ] `dootd init --restore <recovery kit>`: rebuild a server from the recovery kit and the bucket (dootd.db + app backups).
 - [ ] Self-update from the UI, with a `.prev` fallback (architecture §15).
 - [ ] Hardening pass: fuzz the `dootd.toml` parser and the tar extraction, check how many file descriptors each process can open, run `go test -race`, and time a restart with 5 apps.
 - [ ] Soak test: 5 apps running for 7 days on a 1 GB VPS.

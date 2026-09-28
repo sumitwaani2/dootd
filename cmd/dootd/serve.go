@@ -15,6 +15,7 @@ import (
 
 	"github.com/sumitwaani2/dootd/internal/apps"
 	"github.com/sumitwaani2/dootd/internal/auth"
+	"github.com/sumitwaani2/dootd/internal/backup"
 	"github.com/sumitwaani2/dootd/internal/builder"
 	"github.com/sumitwaani2/dootd/internal/buildinfo"
 	"github.com/sumitwaani2/dootd/internal/cgroup"
@@ -23,10 +24,12 @@ import (
 	"github.com/sumitwaani2/dootd/internal/deployer"
 	"github.com/sumitwaani2/dootd/internal/edge"
 	"github.com/sumitwaani2/dootd/internal/layout"
+	"github.com/sumitwaani2/dootd/internal/logs"
 	"github.com/sumitwaani2/dootd/internal/secrets"
 	"github.com/sumitwaani2/dootd/internal/store"
 	"github.com/sumitwaani2/dootd/internal/supervisor"
 	"github.com/sumitwaani2/dootd/internal/toolchain"
+	"github.com/sumitwaani2/dootd/internal/users"
 	"github.com/sumitwaani2/dootd/internal/web"
 )
 
@@ -130,7 +133,24 @@ func serve(log *slog.Logger, cfgPath string, cfgExplicit bool, devApps, socket s
 		log.Warn("edge disabled (edge.listen = \"off\"): apps and the dashboard are only reachable on 127.0.0.1")
 	}
 
+	bk := newBackups(lay, st, box, sup, dep, log)
+	bk.Interval, bk.Retention = cfg.Backups.Interval.Duration, cfg.Backups.Retention.Duration
+	iv, rt := bk.Policy()
+	log.Info("backups", "every", iv, "keep", rt)
+	if err := bk.Init(ctx); err != nil {
+		return err
+	}
+	dep.PreDeploy = func(ctx context.Context, name string, lg *logs.Log) error {
+		_, err := bk.Run(ctx, name, backup.KindPreDeploy, false, lg)
+		if errors.Is(err, backup.ErrNoDatabases) {
+			lg.Writef("pre-deploy backup: no SQLite databases in DATA_DIR yet; nothing to back up")
+			return nil
+		}
+		return err
+	}
+
 	appSvc := apps.New(st, box, dep, sup, edgeMgr, cfg.Edge.DashboardDomain, log)
+	appSvc.SetBackups(bk)
 	for _, n := range static {
 		appSvc.MarkStatic(n)
 	}
@@ -148,6 +168,7 @@ func serve(log *slog.Logger, cfgPath string, cfgExplicit bool, devApps, socket s
 		}
 		dash := &web.Server{
 			Auth: authSvc, Apps: appSvc, Dep: dep, Sup: sup, Edge: edgeMgr, Zig: dep.Zig, Store: st,
+			Backups: bk, MasterKeyPath: cfg.MasterKey,
 			Layout: lay, Host: cfg.Edge.DashboardDomain, Version: buildinfo.Version, Log: log.With("component", "web"),
 		}
 		h, err := dash.Handler()
@@ -167,12 +188,13 @@ func serve(log *slog.Logger, cfgPath string, cfgExplicit bool, devApps, socket s
 		edgeMgr.Run(runCtx)
 	}
 
-	ctl := &control.Server{Sup: sup, Dep: dep, Edge: edgeMgr, Auth: authSvc, Layout: lay, Log: log}
+	ctl := &control.Server{Sup: sup, Dep: dep, Edge: edgeMgr, Auth: authSvc, Backups: bk, Layout: lay, Log: log}
 	ctlErr := make(chan error, 1)
 	go func() { ctlErr <- ctl.Serve(runCtx, socket) }()
 	log.Info("control socket ready", "path", socket)
 
 	dep.Run(runCtx)
+	bk.Schedule(runCtx)
 	go sup.StartAll(runCtx, func(name string) bool { return dep.DesiredRunning(runCtx, name) })
 
 	usr1 := make(chan os.Signal, 1)
@@ -205,6 +227,7 @@ loop:
 
 	log.Info("shutting down: cancelling deployments")
 	dep.Stop()
+	waitUploads(log, bk, 20*time.Second)
 	log.Info("stopping apps")
 	stopCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -214,6 +237,60 @@ loop:
 	os.Remove(socket)
 	log.Info("all apps stopped; bye")
 	return nil
+}
+
+// newBackups creates the backup service and connects it to the apps.
+func newBackups(lay layout.Layout, st *store.Store, box *secrets.Box, sup *supervisor.Supervisor, dep *deployer.Deployer, log *slog.Logger) *backup.Service {
+	return &backup.Service{
+		Layout: lay, Store: st, Box: box, Log: log.With("component", "backup"),
+		SelfSnapshot: func(ctx context.Context, dst string) error {
+			_, err := st.Writer().ExecContext(ctx, `VACUUM INTO ?`, dst)
+			return err
+		},
+		Hooks: backup.Hooks{
+			Apps: func() []string {
+				var names []string
+				for _, a := range sup.Apps() {
+					names = append(names, a.Spec().Name)
+				}
+				return names
+			},
+			Release: func(name string) string {
+				if a := sup.Get(name); a != nil {
+					return a.Status().Release
+				}
+				return ""
+			},
+			Reserve: func(name string) (func(), error) { return dep.Reserve(name, "a restore") },
+			Stop: func(ctx context.Context, name string) (bool, error) {
+				a := sup.Get(name)
+				if a == nil {
+					return false, fmt.Errorf("unknown app %q", name)
+				}
+				switch a.Status().State {
+				case supervisor.Stopped, supervisor.Crashed:
+					return false, nil
+				}
+				return true, a.Stop(ctx)
+			},
+			Start: func(ctx context.Context, name string) error { return dep.StartReserved(ctx, name) },
+			Owner: func(name string) (int, int, error) {
+				u, err := users.Lookup(name)
+				return int(u.UID), int(u.GID), err
+			},
+		},
+	}
+}
+
+// waitUploads gives background backup uploads a moment to finish.
+func waitUploads(log *slog.Logger, bk *backup.Service, max time.Duration) {
+	done := make(chan struct{})
+	go func() { bk.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(max):
+		log.Warn("backup uploads still running at shutdown; they will be retried after the restart")
+	}
 }
 
 // newEdge creates the edge manager and its router (not started yet).

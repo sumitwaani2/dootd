@@ -37,7 +37,7 @@ cf() {
 }
 code()    { cf "$1" "$2" -o /dev/null -w '%{http_code}' "${@:3}" 2>/dev/null; }
 is_code() { [ "$(code "$2" "$3" "${@:4}")" = "$1" ]; }
-body_has() { cf "$1" "$2" 2>/dev/null | grep -qF -- "$3"; }
+body_has() { local b; b="$(cf "$1" "$2" 2>/dev/null)" || return 1; grep -qF -- "$3" <<<"$b"; }
 json_field() { cf "$1" / | python3 -c "import json,sys; d=json.load(sys.stdin); print(d$2)"; }
 state()   { curl -fsS http://127.0.0.1:8787/_mock/state; }
 mock_py() { state | python3 -c "import json,sys; s=json.load(sys.stdin); $1"; }

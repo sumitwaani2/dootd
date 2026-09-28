@@ -15,7 +15,7 @@
   <div class="row"><h1>Apps</h1><a class="button primary" href="/apps/new">Add app</a></div>
   {{if .Data.Apps}}
   <table>
-    <thead><tr><th>App</th><th>State</th><th>Domain</th><th>Release</th><th>Memory</th><th>Requests</th><th></th></tr></thead>
+    <thead><tr><th>App</th><th>State</th><th>Domain</th><th>Release</th><th>Memory</th><th>Requests</th><th>Last backup</th><th></th></tr></thead>
     <tbody>
     {{range .Data.Apps}}
     <tr>
@@ -25,6 +25,7 @@
       <td><code>{{if .Status.Release}}{{.Status.Release}}{{else}}-{{end}}</code></td>
       <td>{{bytes .MemBytes}}</td>
       <td>{{.Requests}}{{if .Requests5xx}} <small class="error-text">({{.Requests5xx}} 5xx)</small>{{end}}</td>
+      <td>{{if .BackupProblem}}<span class="badge s-failed" title="{{.BackupProblem}}">backup failed</span>{{else}}{{ago .LastBackup}}{{end}}</td>
       <td><a href="/apps/{{.Name}}/logs">logs</a></td>
     </tr>
     {{end}}

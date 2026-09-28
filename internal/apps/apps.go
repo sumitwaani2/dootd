@@ -76,9 +76,18 @@ type Service struct {
 	dashboardHost string
 	log           *slog.Logger
 
-	mu     sync.Mutex
-	static map[string]bool
+	mu      sync.Mutex
+	static  map[string]bool
+	backups BackupDeleter
 }
+
+// BackupDeleter removes an app's backups (implemented by internal/backup).
+type BackupDeleter interface {
+	DeleteAll(ctx context.Context, app string) error
+}
+
+// SetBackups connects the backup service (used when deleting apps).
+func (s *Service) SetBackups(b BackupDeleter) { s.backups = b }
 
 // New creates the service. edge may be nil.
 func New(db *store.Store, box *secrets.Box, dep *deployer.Deployer, sup *supervisor.Supervisor, e Edge, dashboardHost string, log *slog.Logger) *Service {
@@ -455,14 +464,16 @@ func (s *Service) DeleteEnv(ctx context.Context, name, key string) error {
 
 // DeleteResult reports what Delete did.
 type DeleteResult struct {
-	KeptData string   // where DATA_DIR was moved, if kept
-	Warnings []string // cleanup steps that failed
+	KeptData       string   // where DATA_DIR was moved, if kept
+	DeletedBackups bool     // local and remote backups removed
+	Warnings       []string // cleanup steps that failed
 }
 
 // Delete stops and removes an app (Req 7.4): process, cgroup, user,
 // releases, logs, caches, routing, DNS record and certificate. DATA_DIR is
-// moved aside if keepData is set, otherwise deleted.
-func (s *Service) Delete(ctx context.Context, name string, keepData bool) (DeleteResult, error) {
+// moved aside if keepData is set, otherwise deleted. Backups are kept
+// unless deleteBackups is set.
+func (s *Service) Delete(ctx context.Context, name string, keepData, deleteBackups bool) (DeleteResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var res DeleteResult
@@ -501,6 +512,11 @@ func (s *Service) Delete(ctx context.Context, name string, keepData bool) (Delet
 	res.KeptData = kept
 	warn("build cgroup", builder.RemoveGroup(s.dep.Builder, name))
 	warn("system user", users.Remove(name))
+	if deleteBackups && s.backups != nil {
+		err := s.backups.DeleteAll(sctx, name)
+		warn("backups", err)
+		res.DeletedBackups = err == nil
+	}
 	s.log.Info("app deleted", "app", name, "kept_data", kept)
 	return res, nil
 }
