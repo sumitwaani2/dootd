@@ -20,3 +20,20 @@ jobs:
           go-version-file: go.mod
       - name: Phase 1 - run supervised apps
         run: sudo env "PATH=$PATH" GOTOOLCHAIN=local ./scripts/e2e/phase1.sh
+
+
+  phase2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Phase 2 - build and deploy
+        env:
+          E2E_GITHUB_REPO: ${{ github.repository }}
+          # PR branch, cloned over HTTPS with the workflow token (private repo)
+          E2E_GITHUB_BRANCH: ${{ github.head_ref }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: sudo --preserve-env=E2E_GITHUB_REPO,E2E_GITHUB_BRANCH,GITHUB_TOKEN env "PATH=$PATH" GOTOOLCHAIN=local ./scripts/e2e/phase2.sh
