@@ -10,7 +10,7 @@ This plan builds dootd in phases. Each phase ends with something that works and 
 | 1 | Run an app | Supervise a local binary with users, cgroups and logs | ✅ |
 | 2 | Build and deploy | GitHub → Zig build → release → health-checked deploy and rollback | ✅ |
 | 3 | Edge | :443, CF-only, Origin CA, AOP, host routing, DNS | ✅ |
-| 4 | Dashboard | Login + the full click-to-deploy flow in the browser | ⬜ |
+| 4 | Dashboard | Login + the full click-to-deploy flow in the browser | ✅ |
 | 5 | Backups | Scheduled, pre-deploy and manual backups to S3/R2, plus restore | ⬜ |
 | 6 | Monitoring | Host and app metrics, request stats, charts, warnings | ⬜ |
 | 7 | Install and self-update → v1.0 | One-line install, `dootd init`, update from the UI, hardening | ⬜ |
@@ -70,20 +70,21 @@ Phases 1–3 are mostly used through the CLI or a config file, so the risky part
 
 ## Phase 4: Dashboard
 
-- [ ] `auth`: argon2id, sessions, CSRF, rate limiting, security headers (architecture §14).
-- [ ] Layout + embedded htmx + CSS (plain and small).
-- [ ] Settings: GitHub PAT (with validation), Cloudflare token (with a permission check), S3 settings (with a test upload).
-- [ ] **Add app**: name, type (zig/c), repo picker, branch, domain, env vars, limits → creates the DNS record, certificate and user.
-- [ ] App page: status, **Deploy / Redeploy**, Rollback, Start/Stop/Restart, live build log and live app log (SSE), env var editor (requires a restart), limits, delete app (with a confirm step and an option to keep backups).
-- [ ] Deploy history list with status, SHA, duration and error.
-- [ ] Zone SSL mode warning with a "Set to Full (strict)" button.
-- [ ] Remove the dev config and dev CLI.
+- [x] `auth`: argon2id, sessions, CSRF, rate limiting, security headers (architecture §14).
+- [x] Layout + CSS + a small vanilla script (no htmx, see architecture D9).
+- [x] Settings: GitHub PAT (with validation), Cloudflare token (verified, zones listed). S3 settings moved to Phase 5, next to the backup code that uses them.
+- [x] **Add app**: name, type (zig/c), repo picker, branch, domain, env vars, limits → creates the DNS record, certificate and user.
+- [x] App page: status, **Deploy / Redeploy**, Rollback, Start/Stop/Restart, live build log and live app log (SSE), env var editor (requires a restart), limits, delete app (with a confirm step and an option to keep backups).
+- [x] Deploy history list with status, SHA, duration and error.
+- [x] Zone SSL mode warning with a "Set to Full (strict)" button.
+- [x] Apps live in the database; `--dev-apps` is kept only for the phase 1–3 end-to-end tests, and `dootd ctl` stays as the SSH fallback. `dootd ctl admin set-password` / `dootd reset-password` create or reset the admin.
 
-**Done when:** a new app goes from repo URL to live HTTPS entirely in the browser, with no SSH.
+**Done when:** a new app goes from repo URL to live HTTPS entirely in the browser, with no SSH (after the one-time admin setup). Automated in `scripts/e2e/phase4.sh` (83 checks, driving the dashboard with curl through the edge).
 
 ## Phase 5: Backups
 
 - [ ] `s3` wrapper: put (multipart), list, get, delete, and a connection test.
+- [ ] Settings page: S3 endpoint, bucket, keys (sealed), with a test upload and delete (moved from Phase 4).
 - [ ] Snapshot using SQLite header detection + `VACUUM INTO` + `quick_check`.
 - [ ] Archive (tar+zstd) + manifest + upload with retries.
 - [ ] Scheduler: every 3 h, manual "Backup now", and the pre-deploy hook in the deployer.

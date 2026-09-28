@@ -23,7 +23,7 @@ Cloudflare (proxied, Full strict) ──HTTPS──► dootd (TLS + routing + da
 
 ## Status
 
-🚧 Phases 1-3 of 7 are done: dootd builds apps from git with their pinned Zig, deploys them with health checks and automatic rollback, supervises them (own user, cgroup limits, restarts, logs), and serves them on :443 behind Cloudflare (Origin CA certificates, Cloudflare-only access with Authenticated Origin Pulls, DNS records). There is no dashboard yet; apps are listed in a temporary file and managed with `dootd ctl`. Progress is tracked in the [Kiro spec](.kiro/specs/dootd/tasks.md).
+🚧 Phases 1-4 of 7 are done: a web dashboard to add apps, set env vars, deploy, roll back and watch logs; builds from git with the pinned Zig; health-checked deploys with automatic rollback; per-app users and cgroup limits; HTTPS on :443 behind Cloudflare (Origin CA certificates, Cloudflare-only access with Authenticated Origin Pulls, DNS records). Backups, monitoring charts and the one-line installer come next. Progress is tracked in the [Kiro spec](.kiro/specs/dootd/tasks.md).
 
 ### Try it on a test VPS
 
@@ -32,9 +32,10 @@ git clone https://github.com/sumitwaani2/dootd && cd dootd
 sudo ./scripts/e2e/phase1.sh   # installs Go-built dootd + Zig 0.16.0, runs both sample apps, 43 checks
 sudo ./scripts/e2e/phase2.sh   # deploys from local git repos with `dootd ctl`, 64 checks
 sudo ./scripts/e2e/phase3.sh   # :443 edge against a fake Cloudflare API, 50 checks
+sudo ./scripts/e2e/phase4.sh   # the dashboard, driven with curl through the edge, 83 checks
 ```
 
-It installs dootd as a systemd service reading `/etc/dootd/dev-apps.toml` (a temporary app list, replaced by the dashboard in Phase 4). Needs Go installed. While dootd runs, `sudo systemctl kill -s USR1 --kill-whom=main dootd` prints every app's status to `journalctl -u dootd`.
+The scripts install dootd as a systemd service (phases 1–3 with a test-only `--dev-apps` file). Needs Go installed. While dootd runs, `sudo systemctl kill -s USR1 --kill-whom=main dootd` prints every app's status to `journalctl -u dootd`.
 
 ## Development
 

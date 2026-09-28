@@ -102,24 +102,28 @@ Tasks are grouped by the phases in `docs/implementation-plan.md`. Each phase end
 
 ## Phase 4: Dashboard
 
-- [ ] 25. `auth`: argon2id, sessions, `__Host-` cookie, CSRF + Origin check, rate limiting, security headers
+- [x] 25. `auth`: argon2id, sessions, `__Host-` cookie, CSRF + Origin check, rate limiting, security headers
   - _Requirements: 5.1–5.6_
-- [ ] 26. Web skeleton: layout, embedded htmx and CSS, SSE helper
-- [ ] 27. Settings pages: GitHub PAT, Cloudflare token, S3 (with validation and tests); secrets are never shown
-  - _Requirements: 3.5, 6.1, 6.2, 6.3_
-- [ ] 28. Add app flow (user, cgroup, port, DNS, certificate), env var editor with reserved-name checks, delete app
+- [x] 26. Web skeleton: layout, CSS, small vanilla script (no htmx), SSE helper
+- [x] 27. Settings pages: GitHub PAT, Cloudflare token (validated); secrets are never shown. S3 settings → task 33b
+  - _Requirements: 3.5, 6.1, 6.2_
+- [x] 28. Add app flow (user, cgroup, port, DNS, certificate), env var editor with reserved-name checks, delete app
   - _Requirements: 7.1–7.5_
-- [ ] 29. App page: deploy/redeploy/rollback, start/stop/restart, live build and app logs, history, limits
+- [x] 29. App page: deploy/redeploy/rollback, start/stop/restart, live build and app logs, history, limits
   - _Requirements: 9.1, 9.5, 9.6, 13.2_
-- [ ] 30. Zone SSL mode warning + one-click fix
+- [x] 30. Zone SSL mode warning + one-click fix
   - _Requirements: 11.6_
-- [ ] 31. Remove the dev config and dev CLI
-- [ ] 32. Phase 4 checkpoint: repo URL → live HTTPS app entirely in the browser
+- [x] 31. Apps stored in the database (`apps`, `app_env`); `--dev-apps` kept for tests only; `dootd ctl admin set-password` and `dootd reset-password`
+  - _Requirements: 2.6_
+- [x] 32. Phase 4 checkpoint: repo URL → live HTTPS app entirely in the browser
+  - Automated: `scripts/e2e/phase4.sh` (83 checks through the edge with a fake Cloudflare API)
 
 ## Phase 5: Backups
 
 - [ ] 33. `s3` wrapper (multipart put, list, get, delete, connection test)
   - _Requirements: 6.3, 14.3_
+- [ ] 33b. Settings page: S3 endpoint, bucket and keys (sealed), test upload + delete
+  - _Requirements: 3.1, 6.3_
 - [ ] 34. Snapshot: header detection, `VACUUM INTO`, `quick_check`
   - _Requirements: 14.2_
 - [ ] 35. Archive + manifest + upload with retries; scheduler (3 h), manual, pre-deploy hook
