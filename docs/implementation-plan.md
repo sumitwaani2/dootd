@@ -9,7 +9,7 @@ This plan builds dootd in phases. Each phase ends with something that works and 
 | 0 | Foundations | Repo, CI, release pipeline, test VPS | ✅ |
 | 1 | Run an app | Supervise a local binary with users, cgroups and logs | ✅ |
 | 2 | Build and deploy | GitHub → Zig build → release → health-checked deploy and rollback | ✅ |
-| 3 | Edge | :443, CF-only, Origin CA, AOP, host routing, DNS | ⬜ |
+| 3 | Edge | :443, CF-only, Origin CA, AOP, host routing, DNS | ✅ |
 | 4 | Dashboard | Login + the full click-to-deploy flow in the browser | ⬜ |
 | 5 | Backups | Scheduled, pre-deploy and manual backups to S3/R2, plus restore | ⬜ |
 | 6 | Monitoring | Host and app metrics, request stats, charts, warnings | ⬜ |
@@ -59,14 +59,14 @@ Phases 1–3 are mostly used through the CLI or a config file, so the risky part
 
 ## Phase 3: Edge
 
-- [ ] `cloudflare` client: verify the token and report its permissions, find zones, upsert DNS A/AAAA records (proxied), Origin CA create/revoke, AOP certificate upload/list/delete, the `tls_client_auth` setting, read the SSL mode, `/ips`.
-- [ ] Listener with the Cloudflare IP filter, a built-in fallback list and a refresh every 24 h.
-- [ ] Origin certificate manager: CSR → certificate, stored on disk and in DB, SNI lookup, daily renewal check.
-- [ ] AOP: private CA + client certificate, upload per zone, `RequireAndVerifyClientCert`, rotation.
-- [ ] Host router + per-app ReverseProxy with header rewriting, timeouts, and 503/502/404 pages.
-- [ ] Per-app request counters (feeds Phase 6).
+- [x] `cloudflare` client: verify the token and report its permissions, find zones, upsert DNS A/AAAA records (proxied), Origin CA create/revoke, AOP certificate upload/list/delete, the `tls_client_auth` setting, read the SSL mode, `/ips`.
+- [x] Listener with the Cloudflare IP filter, a built-in fallback list and a refresh every 24 h.
+- [x] Origin certificate manager: CSR → certificate, stored on disk and in DB, SNI lookup, daily renewal check.
+- [x] AOP: private CA + client certificate, upload per zone, `RequireAndVerifyClientCert`, rotation.
+- [x] Host router + per-app ReverseProxy with header rewriting, timeouts, and 503/502/404 pages.
+- [x] Per-app request counters (feeds Phase 6).
 
-**Done when:** `https://sample.<zone>` works through Cloudflare in Full (strict) mode; `curl --resolve` straight to the VPS IP fails; a request through a different Cloudflare account's zone pointed at the IP fails (AOP); and WebSockets work.
+**Done when:** `https://sample.<zone>` works through Cloudflare in Full (strict) mode; `curl --resolve` straight to the VPS IP fails; a request through a different Cloudflare account's zone pointed at the IP fails (AOP); and WebSockets work. Automated against a fake Cloudflare API in `scripts/e2e/phase3.sh` (50 checks); the real-Cloudflare check is part of the Phase 7 VPS run.
 
 ## Phase 4: Dashboard
 

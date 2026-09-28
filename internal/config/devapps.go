@@ -11,6 +11,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/sumitwaani2/dootd/internal/app"
+	"github.com/sumitwaani2/dootd/internal/edge"
 	"github.com/sumitwaani2/dootd/internal/github"
 )
 
@@ -91,10 +92,11 @@ func LoadDevApps(path string) ([]LoadedApp, error) {
 	}
 
 	var (
-		out   []LoadedApp
-		errs  []error
-		names = map[string]bool{}
-		ports = map[int]string{}
+		out     []LoadedApp
+		errs    []error
+		names   = map[string]bool{}
+		ports   = map[int]string{}
+		domains = map[string]string{}
 	)
 	for i, d := range f.App {
 		fail := func(format string, a ...any) {
@@ -165,6 +167,15 @@ func LoadDevApps(path string) ([]LoadedApp, error) {
 		}
 		if err := s.Validate(); err != nil {
 			errs = append(errs, err)
+		}
+		if s.Domain != "" {
+			s.Domain = strings.ToLower(s.Domain)
+			if err := edge.ValidHostname(s.Domain); err != nil {
+				fail("%v", err)
+			} else if other, ok := domains[s.Domain]; ok {
+				errs = append(errs, fmt.Errorf("apps %q and %q both use domain %s", other, s.Name, s.Domain))
+			}
+			domains[s.Domain] = s.Name
 		}
 		if names[s.Name] {
 			errs = append(errs, fmt.Errorf("app %q is defined twice", s.Name))

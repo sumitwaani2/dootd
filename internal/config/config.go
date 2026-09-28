@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -27,7 +28,22 @@ type Config struct {
 	// CgroupRoot overrides the cgroup directory dootd manages. Empty means
 	// "the cgroup dootd runs in" (the systemd-delegated dootd.service cgroup).
 	CgroupRoot string `toml:"cgroup_root"`
+
+	Edge Edge `toml:"edge"`
 }
+
+// Edge configures the public HTTPS listener (docs/architecture.md §9).
+type Edge struct {
+	Listen          string `toml:"listen"`           // default ":443"; "off" disables the edge
+	DashboardDomain string `toml:"dashboard_domain"` // e.g. "dootd.example.com"
+	PublicIPv4      string `toml:"public_ipv4"`      // default: auto-detect
+	PublicIPv6      string `toml:"public_ipv6"`      // default: auto-detect; "off" = no AAAA records
+	AOP             *bool  `toml:"authenticated_origin_pulls"`
+	CloudflareAPI   string `toml:"cloudflare_api"` // API base override (tests only)
+}
+
+// AOPEnabled reports whether zone-level Authenticated Origin Pulls are on (default true).
+func (e Edge) AOPEnabled() bool { return e.AOP == nil || *e.AOP }
 
 // Load reads the config at path. If the file does not exist and mustExist is
 // false, defaults are returned.
@@ -49,6 +65,10 @@ func Load(path string, mustExist bool) (*Config, error) {
 			return nil, fmt.Errorf("config: %s must be an absolute path, got %q", name, p)
 		}
 	}
+	if c.Edge.Listen == "" {
+		c.Edge.Listen = ":443"
+	}
+	c.Edge.DashboardDomain = strings.ToLower(strings.TrimSpace(c.Edge.DashboardDomain))
 	if c.CgroupRoot != "" && !filepath.IsAbs(c.CgroupRoot) {
 		return nil, fmt.Errorf("config: cgroup_root must be an absolute path, got %q", c.CgroupRoot)
 	}

@@ -91,12 +91,13 @@ Your own env vars from the dashboard are added on top. Names starting with `DOOT
 - Serve **plain HTTP/1.1**. dootd handles TLS in front of your app.
 - Headers you can rely on:
   - `Host`: your domain.
-  - `X-Forwarded-Proto: https`.
-  - `X-Forwarded-For` and `X-Real-IP`: the **real visitor IP**, taken from Cloudflare's `CF-Connecting-IP`.
+  - `X-Forwarded-Proto: https` and `X-Forwarded-Host` (your domain).
+  - `X-Forwarded-For` and `X-Real-IP`: the **real visitor IP**, taken from Cloudflare's `CF-Connecting-IP`. Whatever the visitor sent in these headers is replaced, so they are safe to trust.
   - `CF-Connecting-IP` and `CF-IPCountry`, passed through from Cloudflare.
-- WebSockets and long-polling work.
+- WebSockets, long-polling and streamed responses (SSE) work; responses are flushed to the visitor immediately.
 - Cloudflare limits request bodies to 100 MB on the free plan, so keep uploads smaller than that.
-- While a deploy is running, visitors see a short dootd "deploying" 503 page. Expect about 1–3 s of downtime.
+- While a deploy is running, visitors see a short dootd "deploying" 503 page. Expect about 1–3 s of downtime, plus however long your app takes to become healthy.
+- While your app is stopped or crashed, visitors get a dootd 503 page; if it stops answering unexpectedly, a 502.
 
 ---
 
