@@ -538,18 +538,38 @@ func (s *Service) forgetEmpty(app string, cutoff time.Time) {
 		app, StatusOK, StatusFailed, cutoff.Unix())
 }
 
-// pruneLocal keeps the newest KeepLocal archives of app on disk.
+// pruneLocal keeps the newest KeepLocal archives of app on disk. While a
+// bucket is configured, copies that are not uploaded yet are also kept
+// (until the retention ends), so an S3 outage loses nothing.
 func (s *Service) pruneLocal(app string) {
-	entries, _ := os.ReadDir(s.localDir(app))
-	var names []string
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".tar.zst") || strings.HasSuffix(e.Name(), ".db.zst") {
-			names = append(names, e.Name())
+	ctx := context.Background()
+	_, s3ok, _ := s.S3Config(ctx)
+	keep := map[string]bool{}
+	rows, err := s.Store.Reader().QueryContext(ctx, `SELECT local_path, object_key, created_at FROM backups
+		WHERE app = ? AND local_path != '' ORDER BY id DESC`, app)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-s.retention()).Unix()
+	n := 0
+	for rows.Next() {
+		var path, key string
+		var created int64
+		if rows.Scan(&path, &key, &created) != nil {
+			continue
+		}
+		n++
+		if n <= KeepLocal || (s3ok && key == "" && created > cutoff) {
+			keep[path] = true
 		}
 	}
-	sort.Sort(sort.Reverse(sort.StringSlice(names)))
-	for _, n := range names[min(len(names), KeepLocal):] {
-		p := filepath.Join(s.localDir(app), n)
+	rows.Close()
+	entries, _ := os.ReadDir(s.localDir(app))
+	for _, e := range entries {
+		p := filepath.Join(s.localDir(app), e.Name())
+		if keep[p] || strings.HasSuffix(e.Name(), ".tmp") {
+			continue
+		}
 		os.Remove(p)
 		s.exec(`UPDATE backups SET local_path = '' WHERE local_path = ?`, p)
 	}

@@ -41,9 +41,10 @@ dc()   { curl -sS -m 120 "${TLS[@]}" -b "$JAR" -c "$JAR" "$@"; }
 get()  { dc "https://$D$1"; }
 post() { local p="$1"; shift; dc -o "$OUT/post.html" -w '%{http_code} %{redirect_url}' -H "Origin: https://$D" --data-urlencode "csrf=$CSRF" "$@" "https://$D$p"; }
 refresh_csrf() { CSRF="$(get "${1:-/account}" | grep -oE 'name="csrf" value="[^"]+"' | head -n1 | sed 's/.*value="//; s/"$//')"; [ -n "$CSRF" ]; }
-page_has()  { get "$1" | grep -qF -- "$2"; }
-page_lacks() { ! get "$1" | grep -qF -- "$2"; }
-flash_has() { get "${2:-/account}" | grep -qF -- "$1"; }
+# Capture first: `curl | grep -q` fails under pipefail when grep exits early.
+page_has()  { local b; b="$(get "$1")" || return 1; grep -qF -- "$2" <<<"$b"; }
+page_lacks() { local b; b="$(get "$1")" || return 1; ! grep -qF -- "$2" <<<"$b"; }
+flash_has() { local b; b="$(get "${2:-/account}")" || return 1; grep -qF -- "$1" <<<"$b"; }
 visit()     { curl -sS -m 10 "${TLS[@]}" "https://$APP_HOST/"; }
 visits()    { visit | grep -oE 'Visits: [0-9]+' | grep -oE '[0-9]+'; }
 site_up()   { [ "$(curl -sS -m 5 -o /dev/null -w '%{http_code}' "${TLS[@]}" "https://$APP_HOST/healthz")" = 200 ]; }
