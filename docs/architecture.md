@@ -140,7 +140,7 @@ The last **3 releases** are kept for instant rollback. Older ones are deleted af
 | `app_state` | app, desired_state (running/stopped) |
 | `backups` | id, app (`_dootd` = dootd.db), kind, status (running/ok/failed), object_key, local_path, size, sha256, files, release_id, error, created_at, finished_at |
 | `certs` | hostname, cf_cert_id, not_after |
-| `metrics_1m` | ts, scope (host/app id), cpu, mem, pids, rx/tx, req_count, req_5xx, p50/p95 ms |
+| `metrics_1m` | scope (`_host`, `_dootd` or app), ts (minute), cpu, mem, mem_limit, swap, load1, disk_used, disk_total, pids, io_read, io_write, req, req_5xx (per minute), p50, p95 (ms, NULL = no requests), oom |
 | `schema_migrations` | version |
 
 `*` = encrypted with AES-256-GCM using `master.key`. `dootd.db` uses WAL mode, and dootd uses a single writer connection.
@@ -362,17 +362,31 @@ The last 2 `.pre-restore-*` folders are kept.
 
 ## 13. Monitoring
 
-| Source | Metrics |
-|---|---|
-| Host `/proc/stat`, `/proc/meminfo`, `/proc/loadavg`, `statfs` | CPU %, memory used/available, swap, load, disk used/free on the data root |
-| cgroup `cpu.stat`, `memory.current`, `memory.events`, `pids.current`, `io.stat` | Per-app CPU %, memory, OOM count, pids, disk I/O |
-| Edge counters | Per-app requests/min, 2xx/3xx/4xx/5xx, p50/p95 latency |
-| Supervisor | Uptime, restart count, last exit code |
+| Scope | Source | Metrics |
+|---|---|---|
+| Server (`_host`) | `/proc/stat`, `/proc/meminfo`, `/proc/loadavg`, `statfs(data root)` | CPU % of all cores, memory used (total − available) and total, swap used, load, disk used/size |
+| dootd (`_dootd`) | `/proc/self/status`, `/proc/self/stat`, `/proc/self/task` | resident memory, CPU % of one core, threads |
+| Each app | cgroup `cpu.stat`, `memory.current`, `memory.max` (from the spec), `pids.current`, `io.stat`, `memory.events` | CPU % of one core, memory and limit, processes, disk read/write bytes/s, OOM kills |
+| Each app | edge counters (§9.4) | requests/min, 5xx/min, p50/p95 response time |
 
-- Sampled every **10 s** into an in-memory ring buffer covering the last hour, which feeds the "live" charts.
-- Rolled up to **1-minute** rows in `metrics_1m` and kept for **7 days**. The rollups are pruned hourly.
-- Charts are rendered on the server as SVG and refreshed by the dashboard script. No JS chart library is used.
-- The dashboard shows warnings (in the UI only for v1): disk > 85 %, memory > 90 %, app crashed, backup failed, certificate expiring.
+- `internal/metrics.Collector` samples every **10 s**. CPU and I/O are deltas of cumulative counters divided by the elapsed time; a counter that goes backwards (app re-created, route changed) counts as a reset.
+- Latency percentiles come from the per-app histogram (buckets 5, 10, 25, 50, 100, 250, 500 ms, 1, 2.5, 5, 10 s, and above); the value is the upper bound of the bucket containing the percentile, so it is an estimate with bucket resolution. No requests → no value (a gap in the chart).
+- The last hour of samples per scope is kept in memory (360 points each). At every minute boundary the samples of the previous minute are rolled up into `metrics_1m` (CPU, load and I/O time-weighted averages; memory, swap and processes maxima; requests, 5xx and OOM kills summed; percentiles from the summed histogram). If dootd restarts inside a minute, the partial minute is written at shutdown and merged with the rest (no requests are lost). Rows older than **7 days** are pruned at startup and hourly.
+- **Charts**: `GET /charts?scope=&chart=&range=1h|24h|7d` returns an SVG (server-rendered in `internal/web/chart.go`, no JavaScript chart library). 1h uses the in-memory samples (plus rollups from before a restart); 24h and 7d use rollups, downsampled to at most 360 points. Points more than 2.5 steps apart are not joined; single points are drawn as dots. Pages add a changing `t=` parameter to chart URLs so the 10 s refresh fetches new images.
+- **Pages**: *Monitoring* (server charts: CPU, memory, load, disk; a table of every app's current numbers; dootd's own CPU and memory against its 30 MB target) and a *Usage* section on each app page (CPU with its limit, memory with its limit, requests and 5xx, p50/p95).
+- `dootd ctl top` and `GET /v1/metrics` on the control socket give the latest sample of every scope.
+
+### 13.1 Warnings (dashboard only in v1)
+| Condition | Default (`[monitoring]` in config.toml) |
+|---|---|
+| Disk used on the data root | > 85 % (`disk_warn_percent`) |
+| Server memory used | > 90 % (`memory_warn_percent`) |
+| An app was OOM-killed in the last hour | always, with its limit |
+| An app uses > 90 % of its memory limit | always |
+| A certificate expires soon and was not renewed | < 14 days (`cert_warn_days`) |
+| App crashed, backup failed or only local, configuration changed | always (§10, §12, §14) |
+
+Email/webhook alerts are on the post-v1 backlog.
 
 ## 14. Dashboard and security
 
@@ -405,12 +419,14 @@ The last 2 `.pre-restore-*` folders are kept.
 
 ## 16. Resource budget (targets)
 
-| Item | Target |
-|---|---|
-| dootd idle RSS | < 30 MB |
-| dootd idle CPU | < 1 % (10 s sampling, no busy loops) |
-| Proxy overhead | < 1 ms p50 added latency |
-| Binary size | < 30 MB |
+| Item | Target | Measured (Phase 6 E2E, Ubuntu 24.04 runner, 5 apps, idle) |
+|---|---|---|
+| dootd idle RSS | < 30 MB | 28 MB (11 MB anonymous, 18 MB mapped binary pages) |
+| dootd idle CPU | < 1 % (10 s sampling, no busy loops) | 0.03 % |
+| Proxy overhead | < 1 ms p50 added latency | not measured yet (Phase 7 soak test) |
+| Binary size | < 30 MB | 21 MB (linux/amd64, stripped) |
+
+To stay inside the memory budget dootd sets a soft heap limit of 12 MB (`debug.SetMemoryLimit`), `GOGC=50`, and returns freed memory to the kernel every 2 minutes. Setting `GOMEMLIMIT` or `GOGC` in the unit overrides this. The margin is small: most of the resident memory is the binary's own code pages, which grow with every dependency, so the Phase 6 E2E fails if RSS reaches 30 MB.
 
 ## 17. Decisions log
 
@@ -440,3 +456,6 @@ The last 2 `.pre-restore-*` folders are kept.
 | D22 | Keep the newest archives on the server as well as in the bucket | Restores work without the bucket (and without a bucket at all), and an outage loses nothing |
 | D23 | Verify a backup completely before stopping the app | A broken or tampered backup can never cost uptime or data |
 | D24 | Backup interval and retention are settings (`[backups]`) | Lower RPO when needed; the tests use 30 s |
+| D25 | Charts are SVG images rendered by dootd | No JS library, works with the strict CSP, cheap to refresh |
+| D26 | Latency percentiles from a fixed histogram | Constant memory per app; bucket-level precision is enough to spot slow apps |
+| D27 | Soft heap limit + periodic FreeOSMemory | Keeps idle RSS under 30 MB without hand-tuning allocations |
