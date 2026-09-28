@@ -78,7 +78,7 @@ internal/
   secrets/            master key, AES-GCM seal/open
   auth/               argon2id, sessions, CSRF, login rate-limit
   web/                dashboard handlers, templates, static (embedded)
-  edge/               listener, CF IP filter, TLS config, host router, proxy, request stats
+  edge/               listener, CF IP filter, certificates, AOP CA, TLS config, host router, proxy, request stats, Cloudflare sync
   cloudflare/         minimal REST client (zones, DNS, origin CA, AOP, settings, IPs)
   github/             PAT validation, repo/branch listing, clone via go-git
   toolchain/          zig download/verify/cache
@@ -180,31 +180,36 @@ dootd runs as **root**. It needs this to bind :443, create users, manage cgroups
 ### 9.1 Listener and IP filter
 - dootd listens only on `:443`. There is no `:80`. Enable Cloudflare's "Always Use HTTPS" instead.
 - A custom `net.Listener` checks the TCP peer address against Cloudflare's IPv4 and IPv6 ranges. **Connections from any other address are closed before the TLS handshake.**
-- The ranges are fetched from `GET /client/v4/ips` every 24 h, with a list compiled into the binary as a fallback. The last good list is stored in `settings`.
+- The ranges are fetched from `GET /client/v4/ips` at startup and every 24 h, with a list compiled into the binary as a fallback. The last good list is stored in `settings` and used on the next start. An empty or implausible list (e.g. a /4) is refused, so a bad response can neither lock Cloudflare out nor open the port to everyone.
+- Rejected connections are counted (`dootd ctl edge`) and logged at most once a minute.
 
 ### 9.2 Origin certificates (Full strict)
 - For every hostname (the dashboard plus each app domain), dootd generates an ECDSA P-256 key and a CSR locally. It then calls the Cloudflare **Origin CA** API (`POST /certificates`, `request_type=origin-ecc`, validity 5475 days).
 - The API token authenticates this call. Legacy Origin CA service keys are deprecated and removed after 30 Sep 2026 ([Cloudflare docs](https://developers.cloudflare.com/fundamentals/api/get-started/ca-keys)).
-- `tls.Config.GetCertificate` chooses the certificate by SNI. **Unknown SNI means the handshake fails.**
-- A daily job renews any certificate with less than 30 days left.
+- `tls.Config.GetConfigForClient` chooses the certificate by SNI. **Unknown SNI means the handshake fails.** TLS 1.2+ with h2 and http/1.1.
+- Keys and certificates live in `certs/<host>/` (0600); the Cloudflare certificate ID is in `edge_certs`. The sync (at startup, every 6 h, and on `dootd ctl edge sync`) re-issues any certificate with less than 30 days left and then revokes the replaced one.
 - The zone's SSL mode is **checked, not forced**. If it isn't `strict`, the dashboard shows a warning and a "Set to Full (strict)" button, because the setting affects every hostname in the zone.
 
 ### 9.3 Authenticated Origin Pulls (mTLS)
 The IP filter alone only proves the traffic comes from *someone's* Cloudflare account. **Zone-level AOP with our own CA** proves it comes from *yours*:
-- On first run, dootd creates a private CA and a client certificate signed by it (stored in `aop/`, 5-year validity).
+- On first run, dootd creates a private CA (RSA 3072, 10 years) and a client certificate signed by it (RSA 2048, 5 years), stored in `aop/`. RSA is used because it is what Cloudflare documents for AOP uploads.
 - For each zone it serves, dootd uploads the client certificate and key through the zone-level AOP API (`origin_tls_client_auth`) and turns the zone setting `tls_client_auth` **on** ([Cloudflare docs](https://developers.cloudflare.com/ssl/origin-configuration/authenticated-origin-pull/set-up/zone-level/)).
-- The TLS config uses `ClientAuth: RequireAndVerifyClientCert` with dootd's CA as `ClientCAs`.
+- The TLS config uses `ClientAuth: RequireAndVerifyClientCert` with dootd's CA as `ClientCAs`, **per zone and only once Cloudflare reports our certificate `active` and AOP enabled**. Enforcing earlier would break the site, because Cloudflare would not yet present the certificate.
+- The enforcement state is saved in `edge_zones`, so after a restart it applies immediately, even if the Cloudflare API is unreachable. If a sync fails only because the API is down, enforcement stays on.
+- If someone disables AOP or deletes our certificate in the Cloudflare dashboard, the next sync re-uploads and re-enables it (otherwise the origin would reject all traffic).
 - dootd renews the client certificate 60 days before it expires: it uploads the new one, waits until it is active, then deletes the old one.
-- You can turn this off per zone in settings if it causes problems. The IP filter always stays on.
+- It can be turned off with `edge.authenticated_origin_pulls = false` (per zone in the dashboard later). The IP filter always stays on.
 
 ### 9.4 Router and proxy
 - The `Host` header (lowercased, port removed) is looked up in an in-memory map `domain → app`. This map is rebuilt whenever apps change.
   - Dashboard domain → web UI handler.
   - App domain → that app's `httputil.ReverseProxy` → `http://127.0.0.1:<port>`.
   - Anything else → `404`.
-- The proxy sets `X-Forwarded-For` and `X-Real-IP` from `CF-Connecting-IP`, and sets `X-Forwarded-Proto: https`.
+  - `Host` must equal the TLS SNI, otherwise `421 Misdirected Request`. Without this, a client could use the TLS settings of a zone without AOP to reach an app in a zone with AOP.
+- The proxy sets `X-Forwarded-For` and `X-Real-IP` from `CF-Connecting-IP` (replacing anything the client sent), `X-Forwarded-Proto: https` and `X-Forwarded-Host`, keeps the original `Host`, and flushes responses immediately (streaming/SSE).
 - Timeouts: read header 10 s, idle 120 s, no overall write timeout (so long-polling and WebSockets work). Upstream dial timeout is 5 s.
-- App state `deploying` or `stopped` → built-in 503 page. App down unexpectedly → 502 page.
+- Deploying → 503 "Deploying" (`Retry-After: 3`); starting → 503 "Starting"; stopped/crashed/never deployed → 503 "App not running"; proxy error → 502. Pages carry `X-Dootd-Page` and `Cache-Control: no-store`.
+- The dashboard domain shows a placeholder page until Phase 4.
 - Each request updates in-memory counters per app (count, status class, latency histogram), which are used for metrics.
 
 ### 9.5 Cloudflare API token permissions
@@ -214,7 +219,22 @@ Scope: the zones you use, or all zones.
 - Zone → SSL and Certificates → Edit (Origin CA + AOP certs)
 - Zone → Zone Settings → Edit (enable AOP, read and set the SSL mode)
 
-When an app's domain is set, dootd finds the zone (longest suffix match), then creates or updates a **proxied** `A` record, plus an `AAAA` record if the server has IPv6. Next it issues the certificate and makes sure AOP is set up for the zone.
+When an app's domain is set, dootd finds the zone (longest suffix match), then creates or updates a **proxied** `A` record, plus an `AAAA` record if the server has IPv6. Next it issues the certificate and makes sure AOP is set up for the zone. It refuses to touch a conflicting `CNAME` or duplicate records and reports them instead.
+
+The token is stored sealed (`settings:cloudflare_token`) via `dootd ctl cloudflare-token`, which verifies it and lists the readable zones.
+
+### 9.6 Configuration (`/etc/dootd/config.toml`)
+```toml
+[edge]
+listen           = ":443"               # "off" disables the edge
+dashboard_domain = "dootd.example.com"
+public_ipv4      = ""                   # default: detected via cloudflare.com/cdn-cgi/trace
+public_ipv6      = ""                   # default: detected; "off" = no AAAA records
+authenticated_origin_pulls = true
+```
+
+### 9.7 Testing without Cloudflare
+`scripts/e2e/e2etool cfmock` is a fake Cloudflare API (its own Origin CA root; it exposes the uploaded AOP client certificate the way Cloudflare's edge would present it). The Phase 3 E2E adds `198.18.0.10` to `lo` and lists `198.18.0.0/15` in the fake `/ips`, so requests from it count as Cloudflare while requests from `127.0.0.1` are rejected.
 
 ## 10. Apps: users, cgroups, supervision
 
@@ -389,3 +409,6 @@ The last 2 `.pre-restore` folders are kept.
 | D13 | Clone as root, chown to the app user for the build, then make the tree root-owned (never following symlinks, skipping files owned by others) | The build can't escape into other users' files, and the app can't modify its own release |
 | D14 | Optional app path (monorepo subdirectory) | Lets one repo hold several apps; also lets E2E deploy `examples/*` straight from this repo |
 | D15 | Local admin API on a Unix socket + `dootd ctl` | Deploys before the dashboard exists; permanent SSH fallback; no network exposure |
+| D16 | Enforce AOP per zone, only after Cloudflare reports it active; persist the state | Never break a site during setup; never fail open after a restart |
+| D17 | Host must equal SNI (421 otherwise) | Stops cross-zone requests from bypassing a zone's AOP |
+| D18 | Edge sync is best effort and per host | One misconfigured domain does not block certificates or DNS for the others |

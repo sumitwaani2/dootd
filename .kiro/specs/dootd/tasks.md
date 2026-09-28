@@ -85,17 +85,20 @@ Tasks are grouped by the phases in `docs/implementation-plan.md`. Each phase end
 
 ## Phase 3: Edge
 
-- [ ] 19. `cloudflare` client: token verification and permission report, zones, DNS upsert, Origin CA, AOP certs and setting, SSL mode, `/ips`
+- [x] 19. `cloudflare` client: token verification and permission report, zones, DNS upsert, Origin CA, AOP certs and setting, SSL mode, `/ips`
   - _Requirements: 6.2, 7.2, 11.4, 11.5, 11.6_
-- [ ] 20. Listener with CF IP filter, built-in fallback list, 24 h refresh
+- [x] 20. Listener with CF IP filter, built-in fallback list, 24 h refresh
   - _Requirements: 11.1, 11.2, 11.3_
-- [ ] 21. Origin certificate manager (CSR, SNI lookup, reject unknown SNI, renewal)
+- [x] 21. Origin certificate manager (CSR, SNI lookup, reject unknown SNI, renewal)
   - _Requirements: 11.4_
-- [ ] 22. AOP: private CA, client certificate upload per zone, `RequireAndVerifyClientCert`, rotation
+- [x] 22. AOP: private CA, client certificate upload per zone, `RequireAndVerifyClientCert`, rotation
   - _Requirements: 11.5_
-- [ ] 23. Host router + ReverseProxy (headers, timeouts, WebSockets, 404/502/503 pages, request counters)
+- [x] 23. Host router + ReverseProxy (headers, timeouts, WebSockets, 404/502/503 pages, request counters)
   - _Requirements: 12.1, 12.2, 12.3_
-- [ ] 24. Phase 3 checkpoint: Full (strict) works; direct-IP requests fail; requests via another Cloudflare account fail; WebSockets work
+- [x] 23b. `dootd ctl cloudflare-token`, `edge`, `edge sync`, `edge set-strict <zone>`; `[edge]` config section
+  - _Requirements: 6.2, 11.6_
+- [x] 24. Phase 3 checkpoint: Full (strict) works; direct-IP requests fail; requests via another Cloudflare account fail; WebSockets work
+  - Automated with a fake Cloudflare API: `scripts/e2e/phase3.sh` (50 checks). Re-check against real Cloudflare on the Phase 7 VPS run.
 
 ## Phase 4: Dashboard
 
