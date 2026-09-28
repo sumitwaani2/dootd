@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sumitwaani2/dootd/internal/auth"
+	"github.com/sumitwaani2/dootd/internal/backup"
 	"github.com/sumitwaani2/dootd/internal/deployer"
 	"github.com/sumitwaani2/dootd/internal/edge"
 	"github.com/sumitwaani2/dootd/internal/github"
@@ -32,12 +33,13 @@ const DefaultSocket = "/run/dootd/dootd.sock"
 
 // Server serves the control API.
 type Server struct {
-	Sup    *supervisor.Supervisor
-	Dep    *deployer.Deployer
-	Edge   *edge.Manager // nil when the edge is disabled
-	Auth   *auth.Auth
-	Layout layout.Layout
-	Log    *slog.Logger
+	Sup     *supervisor.Supervisor
+	Dep     *deployer.Deployer
+	Edge    *edge.Manager // nil when the edge is disabled
+	Auth    *auth.Auth
+	Backups *backup.Service
+	Layout  layout.Layout
+	Log     *slog.Logger
 }
 
 // AppView is one app in `GET /v1/apps`.
@@ -91,6 +93,9 @@ func (s *Server) Serve(ctx context.Context, path string) error {
 	mux.HandleFunc("PUT /v1/settings/github-token", s.githubToken)
 	mux.HandleFunc("PUT /v1/settings/cloudflare-token", s.cloudflareToken)
 	mux.HandleFunc("PUT /v1/admin", s.setAdmin)
+	mux.HandleFunc("GET /v1/apps/{app}/backups", s.listBackups)
+	mux.HandleFunc("POST /v1/apps/{app}/backups", s.runBackup)
+	mux.HandleFunc("POST /v1/apps/{app}/restore", s.restore)
 	mux.HandleFunc("GET /v1/edge", s.edgeStatus)
 	mux.HandleFunc("POST /v1/edge/sync", s.edgeSync)
 	mux.HandleFunc("POST /v1/edge/zones/{zone}/ssl-strict", s.edgeStrict)
@@ -454,4 +459,48 @@ func (s *Server) setAdmin(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Log.Info("dashboard admin credentials set over the control socket; all sessions revoked")
 	writeJSON(w, http.StatusOK, map[string]string{"result": "admin " + strings.ToLower(strings.TrimSpace(body.Email)) + " saved; all dashboard sessions were signed out"})
+}
+
+func (s *Server) listBackups(w http.ResponseWriter, r *http.Request) {
+	bs, err := s.Backups.List(r.Context(), r.PathValue("app"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, bs)
+}
+
+func (s *Server) runBackup(w http.ResponseWriter, r *http.Request) {
+	if s.app(w, r) == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
+	defer cancel()
+	b, err := s.Backups.Run(ctx, r.PathValue("app"), backup.KindManual, true, nil)
+	if err != nil {
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, b)
+}
+
+func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
+	if s.app(w, r) == nil {
+		return
+	}
+	var body struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil || body.ID == 0 {
+		writeErr(w, http.StatusBadRequest, errors.New(`body must be {"id": <backup id>}`))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
+	defer cancel()
+	res, err := s.Backups.Restore(ctx, r.PathValue("app"), body.ID, nil)
+	if err != nil {
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }

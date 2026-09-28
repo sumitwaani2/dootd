@@ -78,8 +78,9 @@ type Deployer struct {
 
 	mu        sync.Mutex
 	apps      map[string]AppConfig
-	pending   map[string]int64 // app -> queued or running deployment
-	deploying map[string]bool  // app is between "stop old" and "healthy/failed"
+	pending   map[string]int64  // app -> queued or running deployment
+	held      map[string]string // app -> reason (e.g. a restore) that blocks deployments
+	deploying map[string]bool   // app is between "stop old" and "healthy/failed"
 
 	queue  chan job
 	ctx    context.Context
@@ -106,6 +107,7 @@ func New(ctx context.Context, d Deps) (*Deployer, error) {
 		log:       d.Log,
 		apps:      map[string]AppConfig{},
 		pending:   map[string]int64{},
+		held:      map[string]string{},
 		deploying: map[string]bool{},
 		queue:     make(chan job, 64),
 	}
@@ -195,6 +197,9 @@ func (d *Deployer) enqueue(ctx context.Context, appName, kind, release string) (
 	}
 	if id, ok := d.pending[appName]; ok {
 		return 0, fmt.Errorf("deployment #%d of %s is still in progress", id, appName)
+	}
+	if why, ok := d.held[appName]; ok {
+		return 0, fmt.Errorf("%s: %s is in progress; deploy when it has finished", appName, why)
 	}
 	if d.ctx == nil || d.ctx.Err() != nil {
 		return 0, errors.New("deployer is not running")

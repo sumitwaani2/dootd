@@ -17,6 +17,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/sumitwaani2/dootd/internal/backup"
 	"github.com/sumitwaani2/dootd/internal/control"
 	"github.com/sumitwaani2/dootd/internal/deployer"
 	"github.com/sumitwaani2/dootd/internal/edge"
@@ -35,6 +36,9 @@ Commands:
   deployments <app>             Show deploy history
   logs <app> [-f] [-n N]        Show (and follow) app logs
   start|stop|restart <app>      Control an app
+  backup <app>                  Back up the app's SQLite databases now
+  backups <app>                 List backups
+  restore <app> <backup id>     Restore a backup (stops and restarts the app)
   github-token                  Read a GitHub token from stdin and store it encrypted
                                 (empty input removes it)
   admin set-password [--email E]  Set the dashboard admin email and password
@@ -160,6 +164,8 @@ func runCtl(args []string, stdout, stderr io.Writer) int {
 			return nil
 		case "edge":
 			return ctlEdge(c, rest, stdout)
+		case "backup", "backups", "restore":
+			return ctlBackup(c, cmd, rest, stdout)
 		case "admin":
 			if len(rest) == 0 || rest[0] != "set-password" {
 				return errors.New("usage: dootd ctl admin set-password [--email you@example.com]")
@@ -470,4 +476,54 @@ func ctlSetPassword(c *ctlClient, args []string, out, errOut io.Writer) error {
 	}
 	fmt.Fprintln(out, res["result"])
 	return nil
+}
+
+func ctlBackup(c *ctlClient, cmd string, args []string, out io.Writer) error {
+	switch {
+	case cmd == "backup" && len(args) == 1:
+		var b backup.Backup
+		if err := c.do(http.MethodPost, "/v1/apps/"+args[0]+"/backups", nil, &b); err != nil {
+			return err
+		}
+		where := "this server only"
+		if b.Uploaded() {
+			where = "bucket + server"
+		}
+		fmt.Fprintf(out, "backup #%d: %d database(s), %d bytes, %s\n", b.ID, b.Files, b.Size, where)
+		if b.Error != "" {
+			fmt.Fprintln(out, "warning:", b.Error)
+		}
+		return nil
+	case cmd == "backups" && len(args) == 1:
+		var bs []backup.Backup
+		if err := c.do(http.MethodGet, "/v1/apps/"+args[0]+"/backups", nil, &bs); err != nil {
+			return err
+		}
+		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(tw, "ID\tTAKEN\tKIND\tSTATUS\tSIZE\tBUCKET\tSERVER\tERROR")
+		for _, b := range bs {
+			fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%d\t%v\t%v\t%s\n", b.ID, b.CreatedAt.Local().Format(time.DateTime), b.Kind, b.Status, b.Size, b.Uploaded(), b.LocalPath != "", b.Error)
+		}
+		return tw.Flush()
+	case cmd == "restore" && len(args) == 2:
+		var id int64
+		if _, err := fmt.Sscan(args[1], &id); err != nil {
+			return errors.New("backup id must be a number")
+		}
+		body, _ := json.Marshal(map[string]int64{"id": id})
+		var res backup.RestoreResult
+		if err := c.do(http.MethodPost, "/v1/apps/"+args[0]+"/restore", strings.NewReader(string(body)), &res); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "restored %s", strings.Join(res.Files, ", "))
+		if res.MovedTo != "" {
+			fmt.Fprintf(out, "; previous databases moved to %s", res.MovedTo)
+		}
+		fmt.Fprintln(out)
+		if res.StartError != "" {
+			return errors.New("the app did not start again: " + res.StartError)
+		}
+		return nil
+	}
+	return fmt.Errorf("usage: dootd ctl %s <app>%s", cmd, map[bool]string{true: " <backup id>"}[cmd == "restore"])
 }

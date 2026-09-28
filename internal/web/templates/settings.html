@@ -58,6 +58,32 @@
   {{end}}
 </section>
 
+<section class="card" id="backups">
+  <h2>Backups</h2>
+  <p class="muted">Backups run {{.Data.Policy}} (set <code>[backups]</code> in /etc/dootd/config.toml to change). Works with Cloudflare R2, Backblaze B2, AWS S3, MinIO or any S3-compatible storage. Objects go under <code>&lt;prefix&gt;/{{.Data.HostID}}/&lt;app&gt;/</code>.</p>
+  {{with .Data.S3}}<p>Bucket <b>{{.Bucket}}</b> at {{.Endpoint}} (region {{.Region}}, prefix <code>{{.Prefix}}</code>, key <code>{{.AccessKey}}</code>). The secret is stored encrypted.</p>{{end}}
+  <form method="post" action="/settings/s3" class="grid">
+    {{template "csrf" $csrf}}
+    <label class="wide">Endpoint <input name="endpoint" value="{{with .Data.S3}}{{.Endpoint}}{{end}}" placeholder="https://&lt;account id&gt;.r2.cloudflarestorage.com" required></label>
+    <label>Bucket <input name="bucket" value="{{with .Data.S3}}{{.Bucket}}{{end}}" required></label>
+    <label>Region <input name="region" value="{{with .Data.S3}}{{.Region}}{{else}}auto{{end}}"><small>"auto" for R2</small></label>
+    <label>Access key ID <input name="access_key" value="{{with .Data.S3}}{{.AccessKey}}{{end}}" autocomplete="off" required></label>
+    <label>Secret access key <input type="password" name="secret_key" autocomplete="off" {{if not .Data.S3Set}}required{{end}} placeholder="{{if .Data.S3Set}}(unchanged){{end}}"></label>
+    <label>Prefix <input name="prefix" value="{{with .Data.S3}}{{.Prefix}}{{else}}dootd{{end}}"></label>
+    <div class="wide"><button>Test and save</button>
+    {{if .Data.S3Set}}<button name="remove" value="1" class="link" formnovalidate data-confirm-click="Remove the S3 settings? Backups will then only be kept on this server.">remove</button>{{end}}</div>
+  </form>
+
+  <h3>Recovery kit</h3>
+  <p>The master key encrypts the tokens and env vars in dootd's database, including its daily backup. Without it, a restored dootd.db is useless.
+    {{with .Data.KitSaved}}<span class="muted">Last downloaded {{.}}.</span>{{else}}<span class="warn-text">Not downloaded yet.</span>{{end}}</p>
+  <form method="post" action="/settings/recovery-kit" class="inline">{{template "csrf" $csrf}}<button>Download recovery kit</button></form>
+  {{with .Data.SelfBackups}}
+  <h3>dootd.db backups</h3>
+  <table><tbody>{{range .}}<tr><td>#{{.ID}}</td><td>{{datetime .CreatedAt}}</td><td>{{.Status}}</td><td>{{bytes .Size}}</td><td>{{if .Uploaded}}bucket{{else}}server only{{end}}</td><td class="error-text">{{.Error}}</td></tr>{{end}}</tbody></table>
+  {{end}}
+</section>
+
 <section class="card">
   <h2>Zig toolchains</h2>
   <p class="muted">Downloaded when a deploy needs them. Deleting one only means the next build that pins it downloads it again.</p>

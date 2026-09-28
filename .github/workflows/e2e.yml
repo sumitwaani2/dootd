@@ -59,3 +59,14 @@ jobs:
           go-version-file: go.mod
       - name: Phase 4 - dashboard
         run: sudo env "PATH=$PATH" GOTOOLCHAIN=local ./scripts/e2e/phase4.sh
+
+  phase5:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Phase 5 - backups (rclone serve s3 as the bucket)
+        run: sudo env "PATH=$PATH" GOTOOLCHAIN=local ./scripts/e2e/phase5.sh

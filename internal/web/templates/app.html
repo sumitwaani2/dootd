@@ -67,6 +67,30 @@
   {{else}}<p class="muted">No deployments yet.</p>{{end}}
 </section>
 
+<section class="card" id="backups">
+  <div class="row">
+    <h2>Backups</h2>
+    <form method="post" action="/apps/{{.Name}}/backup" class="inline">{{template "csrf" $csrf}}<button>Back up now</button></form>
+  </div>
+  {{with .BackupProblem}}<p class="error">{{.}}</p>{{end}}
+  <p class="muted">SQLite files in DATA_DIR are backed up {{$.Data.Policy}} (the newest is always kept). The last 2 are also kept on this server.{{if not $.Data.S3Set}} <b>No bucket is configured</b>, so they are only on this server.{{end}}</p>
+  {{with $.Data.Backups}}
+  <table>
+    <thead><tr><th>#</th><th>Taken</th><th>Kind</th><th>Status</th><th>Size</th><th>Where</th><th>Release</th><th></th></tr></thead>
+    <tbody>{{range .}}
+    <tr>
+      <td>#{{.ID}}</td><td>{{datetime .CreatedAt}} <small class="muted">{{ago .CreatedAt}}</small></td><td>{{.Kind}}</td>
+      <td>{{if eq .Status "ok"}}<span class="badge s-running">ok</span>{{else}}{{template "state" .Status}}{{end}}{{with .Error}} <small class="error-text">{{.}}</small>{{end}}</td>
+      <td>{{bytes .Size}}</td>
+      <td>{{if .Uploaded}}bucket{{end}}{{if and .Uploaded .LocalPath}} + {{end}}{{if .LocalPath}}server{{end}}</td>
+      <td><code>{{if .ReleaseID}}{{.ReleaseID}}{{else}}-{{end}}</code></td>
+      <td>{{if .Restorable}}<form method="post" action="/apps/{{$.Data.App.Name}}/restore" class="inline" data-confirm="Restore backup #{{.ID}} from {{datetime .CreatedAt}}? The app is stopped briefly; its current databases are moved to a .pre-restore folder.">{{template "csrf" $csrf}}<input type="hidden" name="id" value="{{.ID}}"><button>Restore</button></form>{{end}}</td>
+    </tr>{{end}}
+    </tbody>
+  </table>
+  {{else}}<p class="muted">No backups yet.</p>{{end}}
+</section>
+
 <section class="card" id="env">
   <h2>Environment variables</h2>
   <p class="muted">Stored encrypted and never shown again. <code>PORT</code>, <code>HOST</code>, <code>DATA_DIR</code>, <code>TMPDIR</code> and <code>DOOTD_*</code> are set by dootd. Changes apply on the next restart or deploy.</p>
@@ -113,6 +137,7 @@
     {{template "csrf" $csrf}}
     <label>Type <b>{{.Name}}</b> to confirm <input name="confirm" autocomplete="off" required></label>
     <label class="check"><input type="checkbox" name="keep_data" value="1" checked> Keep a copy of the data directory (SQLite files)</label>
+    <label class="check"><input type="checkbox" name="delete_backups" value="1"> Also delete its backups (on this server and in the bucket)</label>
     <div class="wide"><button class="danger">Delete {{.Name}}</button></div>
   </form>
 </section>
