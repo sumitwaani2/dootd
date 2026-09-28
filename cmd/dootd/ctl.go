@@ -15,6 +15,8 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"golang.org/x/term"
+
 	"github.com/sumitwaani2/dootd/internal/control"
 	"github.com/sumitwaani2/dootd/internal/deployer"
 	"github.com/sumitwaani2/dootd/internal/edge"
@@ -35,6 +37,8 @@ Commands:
   start|stop|restart <app>      Control an app
   github-token                  Read a GitHub token from stdin and store it encrypted
                                 (empty input removes it)
+  admin set-password [--email E]  Set the dashboard admin email and password
+                                (prompts; or reads the password from stdin when not a terminal)
   cloudflare-token              Read a Cloudflare API token from stdin, verify and store it encrypted
   edge                          Show TLS, DNS, AOP and Cloudflare status
   edge sync                     Sync DNS records, certificates and AOP with Cloudflare now
@@ -156,6 +160,11 @@ func runCtl(args []string, stdout, stderr io.Writer) int {
 			return nil
 		case "edge":
 			return ctlEdge(c, rest, stdout)
+		case "admin":
+			if len(rest) == 0 || rest[0] != "set-password" {
+				return errors.New("usage: dootd ctl admin set-password [--email you@example.com]")
+			}
+			return ctlSetPassword(c, rest[1:], stdout, stderr)
 		case "help", "-h", "--help":
 			fmt.Fprint(stdout, ctlUsage)
 			return nil
@@ -420,4 +429,45 @@ func printEdge(out io.Writer, st edge.Status) {
 		}
 		tw.Flush()
 	}
+}
+
+func ctlSetPassword(c *ctlClient, args []string, out, errOut io.Writer) error {
+	fs := flag.NewFlagSet("set-password", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	email := fs.String("email", "", "admin email (default: keep the current one)")
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
+		return errors.New("usage: dootd ctl admin set-password [--email you@example.com]")
+	}
+	var pw string
+	if fd := int(os.Stdin.Fd()); term.IsTerminal(fd) {
+		fmt.Fprint(errOut, "New password (at least 12 characters): ")
+		a, err := term.ReadPassword(fd)
+		fmt.Fprintln(errOut)
+		if err != nil {
+			return err
+		}
+		fmt.Fprint(errOut, "Repeat password: ")
+		b, err := term.ReadPassword(fd)
+		fmt.Fprintln(errOut)
+		if err != nil {
+			return err
+		}
+		if string(a) != string(b) {
+			return errors.New("passwords do not match")
+		}
+		pw = string(a)
+	} else {
+		b, err := io.ReadAll(io.LimitReader(os.Stdin, 4096))
+		if err != nil {
+			return err
+		}
+		pw = strings.TrimRight(string(b), "\r\n")
+	}
+	body, _ := json.Marshal(map[string]string{"email": *email, "password": pw})
+	var res map[string]string
+	if err := c.do(http.MethodPut, "/v1/admin", strings.NewReader(string(body)), &res); err != nil {
+		return err
+	}
+	fmt.Fprintln(out, res["result"])
+	return nil
 }

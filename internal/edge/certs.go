@@ -124,3 +124,14 @@ func normalizeHost(h string) string {
 	}
 	return strings.TrimSuffix(h, ".")
 }
+
+// Delete forgets hostname's certificate and removes its files.
+func (s *CertStore) Delete(host string) {
+	if ValidHostname(host) != nil {
+		return
+	}
+	s.mu.Lock()
+	delete(s.certs, host)
+	s.mu.Unlock()
+	os.RemoveAll(filepath.Join(s.dir, host))
+}

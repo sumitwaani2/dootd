@@ -5,6 +5,7 @@ package app
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -203,4 +204,20 @@ func SplitCommand(s string) ([]string, error) {
 		return nil, errors.New("command is empty")
 	}
 	return args, nil
+}
+
+// CleanSubdir normalizes an app path inside a repository ("" = repo root).
+func CleanSubdir(p string) (string, error) {
+	p = strings.Trim(strings.TrimSpace(p), "/")
+	if p == "" {
+		return "", nil
+	}
+	c := filepath.Clean(p)
+	if c == ".." || strings.HasPrefix(c, "../") || c == ".git" || strings.HasPrefix(c, ".git/") {
+		return "", fmt.Errorf("%q must be a directory inside the repository", p)
+	}
+	if c == "." {
+		return "", nil
+	}
+	return c, nil
 }

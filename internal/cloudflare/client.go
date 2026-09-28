@@ -311,3 +311,8 @@ func (c *Client) IPs(ctx context.Context) (IPRanges, error) {
 	err := c.do(ctx, http.MethodGet, "/ips", "", nil, &r)
 	return r, err
 }
+
+// DeleteDNSRecord deletes one DNS record.
+func (c *Client) DeleteDNSRecord(ctx context.Context, zoneID, id string) error {
+	return c.do(ctx, http.MethodDelete, "/zones/"+zoneID+"/dns_records/"+id, "DNS: Edit", nil, nil)
+}

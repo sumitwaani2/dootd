@@ -311,3 +311,12 @@ func CheckBinary(root, bin string) error {
 	}
 	return nil
 }
+
+// RemoveGroup deletes an app's (empty) build cgroup.
+func RemoveGroup(b *Builder, appName string) error {
+	g, err := b.Cgroups.Group(cgroup.Builds, appName)
+	if err != nil {
+		return err
+	}
+	return g.Remove()
+}

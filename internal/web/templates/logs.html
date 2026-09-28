@@ -1,0 +1,7 @@
+{{define "content"}}
+<section class="card">
+  <div class="row"><h1><a href="/apps/{{.Data.Name}}">{{.Data.Name}}</a> · logs</h1><span class="muted" data-stream-status>connecting…</span></div>
+  <p class="muted">Last 300 lines, then new lines as they arrive. Files are kept on the server (10 MB × 3).</p>
+  <pre class="log" data-stream="/apps/{{.Data.Name}}/logs/stream"></pre>
+</section>
+{{end}}

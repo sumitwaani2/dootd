@@ -297,7 +297,8 @@ func displayRepo(r github.Repo) string {
 	return r.URL
 }
 
-func (d *Deployer) githubToken(ctx context.Context) (string, error) {
+// GitHubToken returns the stored GitHub token ("" if none).
+func (d *Deployer) GitHubToken(ctx context.Context) (string, error) {
 	v, ok, err := d.Store.GetSetting(ctx, SettingGitHubToken)
 	if err != nil || !ok {
 		return "", err
@@ -336,7 +337,7 @@ func (d *Deployer) deploy(ctx context.Context, cfg AppConfig, j job, lg *logs.Lo
 	// 1. Clone. The running release keeps serving during steps 1-5.
 	var token string
 	if cfg.Repo.GitHub {
-		if token, err = d.githubToken(ctx); err != nil {
+		if token, err = d.GitHubToken(ctx); err != nil {
 			return err
 		}
 	}

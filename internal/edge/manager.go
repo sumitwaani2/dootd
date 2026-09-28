@@ -762,3 +762,62 @@ func (m *Manager) Status(ctx context.Context) Status {
 	sort.Slice(s.Zones, func(i, j int) bool { return s.Zones[i].Name < s.Zones[j].Name })
 	return s
 }
+
+// SyncInBackground starts a sync (e.g. after an app or domain was added)
+// without waiting for it.
+func (m *Manager) SyncInBackground() {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		if _, err := m.Sync(ctx); err != nil {
+			m.log.Warn("cloudflare sync failed", "err", err)
+		}
+	}()
+}
+
+// RemoveHost cleans up a hostname that is no longer served: it deletes the
+// A/AAAA records that point at this server, revokes the Origin CA
+// certificate and removes the local copy. AOP stays on for the zone.
+func (m *Manager) RemoveHost(ctx context.Context, host string) error {
+	m.syncMu.Lock()
+	defer m.syncMu.Unlock()
+	var errs []error
+	m.mu.Lock()
+	zoneID := m.hostZone[host]
+	delete(m.hostZone, host)
+	delete(m.hostState, host)
+	v4, v6 := m.pubV4, m.pubV6
+	m.mu.Unlock()
+
+	var certID string
+	m.store.Reader().QueryRowContext(ctx, `SELECT cf_cert_id FROM edge_certs WHERE hostname = ?`, host).Scan(&certID)
+	if token, err := m.token(ctx); err == nil && zoneID != "" {
+		c := m.client(token)
+		if rs, err := c.DNSRecords(ctx, zoneID, host); err != nil {
+			errs = append(errs, fmt.Errorf("DNS: %w", err))
+		} else {
+			for _, r := range rs {
+				if (r.Type == "A" && r.Content == v4) || (r.Type == "AAAA" && r.Content == v6) {
+					if err := c.DeleteDNSRecord(ctx, zoneID, r.ID); err != nil {
+						errs = append(errs, fmt.Errorf("DNS: %w", err))
+					}
+				}
+			}
+		}
+		if certID != "" {
+			if err := c.RevokeOriginCert(ctx, certID); err != nil && !cloudflare.IsNotFound(err) {
+				errs = append(errs, fmt.Errorf("revoke certificate: %w", err))
+			}
+		}
+	} else if err != nil {
+		errs = append(errs, fmt.Errorf("DNS record and certificate left in Cloudflare: %w", err))
+	}
+	if _, err := m.store.Writer().ExecContext(ctx, `DELETE FROM edge_certs WHERE hostname = ?`, host); err != nil {
+		errs = append(errs, err)
+	}
+	m.Certs.Delete(host)
+	if len(errs) == 0 {
+		m.log.Info("removed hostname", "host", host)
+	}
+	return errors.Join(errs...)
+}
