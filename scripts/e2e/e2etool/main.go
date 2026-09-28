@@ -368,6 +368,8 @@ func fail(w http.ResponseWriter, code int, msg string) {
 
 // ---------------------------------------------------------------- echo
 
+var keep [][]byte
+
 func echo(args []string) {
 	fs := flag.NewFlagSet("echo", flag.ExitOnError)
 	delay := fs.Duration("delay", 0, "wait before listening (simulates a slow start)")
@@ -384,6 +386,35 @@ func echo(args []string) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"app": os.Getenv("DOOTD_APP"), "release": os.Getenv("DOOTD_RELEASE"),
 			"host": r.Host, "path": r.URL.Path, "remote": r.RemoteAddr, "headers": h})
+	})
+	// /burn?s=N keeps one core busy for N seconds (monitoring tests).
+	mux.HandleFunc("/burn", func(w http.ResponseWriter, r *http.Request) {
+		secs, _ := time.ParseDuration(r.URL.Query().Get("s") + "s")
+		end := time.Now().Add(secs)
+		go func() {
+			x := 0.0
+			for time.Now().Before(end) {
+				for i := 0; i < 1e5; i++ {
+					x += float64(i) * 1.0000001
+				}
+			}
+			_ = x
+		}()
+		io.WriteString(w, "burning\n")
+	})
+	// /alloc?mb=N allocates and keeps N MB (memory and OOM tests).
+	mux.HandleFunc("/alloc", func(w http.ResponseWriter, r *http.Request) {
+		var mb int
+		fmt.Sscan(r.URL.Query().Get("mb"), &mb)
+		b := make([]byte, mb<<20)
+		for i := range b {
+			b[i] = byte(i*7 + i>>9)
+		}
+		keep = append(keep, b)
+		io.WriteString(w, "allocated\n")
+	})
+	mux.HandleFunc("/fail", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "failing on purpose", http.StatusInternalServerError)
 	})
 	mux.HandleFunc("/stream", func(w http.ResponseWriter, r *http.Request) {
 		fl := w.(http.Flusher)

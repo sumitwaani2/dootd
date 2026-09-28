@@ -142,16 +142,19 @@ Tasks are grouped by the phases in `docs/implementation-plan.md`. Each phase end
 
 ## Phase 6: Monitoring
 
-- [ ] 40. Collector (host `/proc` + `statfs`, cgroup stats, edge counters, supervisor stats) every 10 s
+- [x] 40. Collector (host `/proc` + `statfs`, cgroup stats, edge counters, supervisor stats) every 10 s
   - _Requirements: 16.1_
-- [ ] 41. 1 h ring buffer + `metrics_1m` 7-day rollups and pruning
+- [x] 41. 1 h ring buffer + `metrics_1m` 7-day rollups and pruning
   - _Requirements: 16.2_
-- [ ] 42. Server-rendered SVG charts for host and apps
+- [x] 42. Server-rendered SVG charts for host and apps
   - _Requirements: 16.3_
-- [ ] 43. Warnings (disk, memory, OOM, crashed, backup failed, certificate expiring)
+- [x] 43. Warnings (disk, memory, OOM, crashed, backup failed, certificate expiring)
   - _Requirements: 16.4_
-- [ ] 44. Phase 6 checkpoint: numbers match `top`/`systemd-cgtop`; dootd RSS < 30 MB with 5 apps
+- [x] 44. Phase 6 checkpoint: numbers match `top`/`systemd-cgtop`; dootd RSS < 30 MB with 5 apps
   - _Requirements: 1.3_
+  - Automated: `scripts/e2e/phase6.sh` (48 checks). Measured 28 MB RSS / 0.03 % CPU idle with 5 apps.
+- [x] 44b. `[monitoring]` warning thresholds, `dootd ctl top`, `GET /v1/metrics`, memory tuning (soft heap limit)
+  - _Requirements: 1.3, 16.4_
 
 ## Phase 7: Install, self-update, v1.0
 

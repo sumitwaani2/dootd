@@ -25,6 +25,7 @@ import (
 	"github.com/sumitwaani2/dootd/internal/deployer"
 	"github.com/sumitwaani2/dootd/internal/edge"
 	"github.com/sumitwaani2/dootd/internal/layout"
+	"github.com/sumitwaani2/dootd/internal/metrics"
 	"github.com/sumitwaani2/dootd/internal/store"
 	"github.com/sumitwaani2/dootd/internal/supervisor"
 	"github.com/sumitwaani2/dootd/internal/toolchain"
@@ -53,6 +54,8 @@ type Server struct {
 	Backups *backup.Service
 	// MasterKeyPath is included in the recovery kit.
 	MasterKeyPath string
+	Metrics       *metrics.Collector
+	Thresholds    Thresholds
 	Layout        layout.Layout
 	Host          string // dashboard hostname
 	Version       string
@@ -105,6 +108,8 @@ func (s *Server) Handler() (http.Handler, error) {
 	authed("GET /deployments/{id}", s.deploymentPage)
 	authed("GET /deployments/{id}/stream", s.deploymentStream)
 	authed("GET /settings", s.settingsPage)
+	authed("GET /metrics", s.metricsPage)
+	authed("GET /charts", s.chartSVG)
 	authed("POST /settings/github-token", s.setGitHubToken)
 	authed("POST /settings/cloudflare-token", s.setCloudflareToken)
 	authed("POST /settings/edge-sync", s.edgeSync)
@@ -284,7 +289,14 @@ func (s *Server) parseTemplates() error {
 			}
 			return b.Sub(a).Round(100 * time.Millisecond).String()
 		},
-		"pct": func(f float64) string { return fmt.Sprintf("%.0f%%", f) },
+		"pct":   func(f float64) string { return fmt.Sprintf("%.0f%%", f) },
+		"int64": func(f float64) int64 { return int64(f) },
+		"ratio": func(a, b int64) float64 {
+			if b <= 0 {
+				return 0
+			}
+			return float64(a) * 100 / float64(b)
+		},
 	}
 	s.pages = map[string]*template.Template{}
 	entries, err := fs.Glob(templateFS, "templates/*.html")

@@ -30,8 +30,16 @@ type Config struct {
 	// "the cgroup dootd runs in" (the systemd-delegated dootd.service cgroup).
 	CgroupRoot string `toml:"cgroup_root"`
 
-	Edge    Edge    `toml:"edge"`
-	Backups Backups `toml:"backups"`
+	Edge       Edge       `toml:"edge"`
+	Backups    Backups    `toml:"backups"`
+	Monitoring Monitoring `toml:"monitoring"`
+}
+
+// Monitoring configures dashboard warning thresholds (docs/architecture.md §13).
+type Monitoring struct {
+	DiskWarnPercent   float64 `toml:"disk_warn_percent"`   // default 85
+	MemoryWarnPercent float64 `toml:"memory_warn_percent"` // default 90
+	CertWarnDays      int     `toml:"cert_warn_days"`      // default 14
 }
 
 // Backups configures the backup schedule (docs/architecture.md §12).

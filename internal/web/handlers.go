@@ -16,6 +16,7 @@ import (
 	"github.com/sumitwaani2/dootd/internal/edge"
 	"github.com/sumitwaani2/dootd/internal/github"
 	"github.com/sumitwaani2/dootd/internal/hostinfo"
+	"github.com/sumitwaani2/dootd/internal/metrics"
 	"github.com/sumitwaani2/dootd/internal/supervisor"
 	"github.com/sumitwaani2/dootd/internal/toolchain"
 )
@@ -157,6 +158,7 @@ func (s *Server) warnings(ctx context.Context, rows []AppRow) []string {
 			ws = append(ws, "dootd.db: "+p)
 		}
 	}
+	ws = append(ws, s.metricWarnings(ctx, rows)...)
 	for _, r := range rows {
 		if r.BackupProblem != "" {
 			ws = append(ws, r.Name+": "+r.BackupProblem)
@@ -248,7 +250,14 @@ func (s *Server) appPage(w http.ResponseWriter, r *http.Request) {
 		s.errorPage(w, r, http.StatusNotFound, fmt.Errorf("app %q not found", name))
 		return
 	}
-	data := map[string]any{"App": row}
+	rng := metrics.ParseRange(r.URL.Query().Get("range"))
+	data := map[string]any{"App": row, "Range": string(rng), "Ranges": []string{"1h", "24h", "7d"},
+		"Charts": chartRefs(name, rng, [][2]string{{"cpu", "CPU"}, {"memory", "Memory"}, {"requests", "Requests"}, {"latency", "Response time"}})}
+	if s.Metrics != nil {
+		if p, ok := s.Metrics.Latest(name); ok {
+			data["Now"] = p
+		}
+	}
 	if !row.Static {
 		full, err := s.Apps.Get(r.Context(), name)
 		if err != nil {

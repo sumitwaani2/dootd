@@ -1,0 +1,32 @@
+{{define "content"}}
+<section class="card" id="usage">
+  <div class="row"><h1>Server</h1>{{template "ranges" .Data}}</div>
+  {{with .Data.HostNow}}<p class="muted">Now: CPU {{printf "%.0f" .CPU}}% · memory {{bytes .Mem}} of {{bytes .MemLimit}} ({{pct (ratio .Mem .MemLimit)}}) · swap {{bytes .Swap}} · load {{printf "%.2f" .Load}} · disk {{bytes .DiskUsed}} of {{bytes .DiskTotal}} ({{pct (ratio .DiskUsed .DiskTotal)}})</p>{{end}}
+  <div class="charts" data-refresh="10" id="host-charts">{{range .Data.Host}}<figure><figcaption>{{.Title}}</figcaption><img src="{{.URL}}" alt="{{.Title}} chart" width="640" height="180"></figure>{{end}}</div>
+</section>
+
+<section class="card">
+  <h2>Apps now</h2>
+  <div data-refresh="10" id="apps-now">
+  <table>
+    <thead><tr><th>App</th><th>State</th><th>CPU (of a core)</th><th>Memory</th><th>Processes</th><th>Disk I/O</th><th>Requests/min</th><th>p95</th><th>Restarts</th></tr></thead>
+    <tbody>{{range .Data.Apps}}
+    <tr>
+      <td><a href="/apps/{{.Name}}#usage">{{.Name}}</a></td><td>{{template "state" .Status.State}}</td>
+      {{if .OK}}<td>{{printf "%.1f" .Now.CPU}}%</td><td>{{bytes .Now.Mem}} <small class="muted">/ {{bytes .Now.MemLimit}}</small></td><td>{{.Now.Pids}}</td>
+      <td>{{bytes (int64 .Now.IORead)}}/s ↓ {{bytes (int64 .Now.IOWrite)}}/s ↑</td><td>{{printf "%.0f" .Now.Req}}</td>
+      <td>{{if eq .Now.P95 .Now.P95}}{{printf "%.0f" .Now.P95}} ms{{else}}-{{end}}</td>{{else}}<td colspan="6" class="muted">no samples yet</td>{{end}}
+      <td>{{.Status.Restarts}}{{if .Status.OOMKills}} <small class="error-text">({{.Status.OOMKills}} OOM)</small>{{end}}</td>
+    </tr>{{else}}<tr><td colspan="9" class="muted">No apps.</td></tr>{{end}}
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section class="card">
+  <h2>dootd itself</h2>
+  {{with .Data.Self}}<p class="muted">Now: {{bytes .Mem}} resident (target under 30 MB) · CPU {{printf "%.1f" .CPU}}% of a core · {{.Pids}} threads</p>{{end}}
+  <div class="charts" data-refresh="10" id="dootd-charts">{{range .Data.Dootd}}<figure><figcaption>{{.Title}}</figcaption><img src="{{.URL}}" alt="{{.Title}} chart" width="640" height="180"></figure>{{end}}</div>
+  <p class="muted">Samples every 10 s; the last hour is kept in memory, 1-minute averages for 7 days.</p>
+</section>
+{{end}}

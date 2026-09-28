@@ -13,6 +13,7 @@
   {{if .CSRF}}
   <nav>
     <a href="/" {{if eq .Nav "apps"}}class="on"{{end}}>Apps</a>
+    <a href="/metrics" {{if eq .Nav "metrics"}}class="on"{{end}}>Monitoring</a>
     <a href="/settings" {{if eq .Nav "settings"}}class="on"{{end}}>Settings</a>
     <a href="/account" {{if eq .Nav "account"}}class="on"{{end}}>Account</a>
     <form method="post" action="/logout" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="link">Sign out</button></form>
@@ -28,5 +29,7 @@
 </html>{{end}}
 
 {{define "csrf"}}<input type="hidden" name="csrf" value="{{.}}">{{end}}
+
+{{define "ranges"}}<nav class="ranges">{{$cur := .Range}}{{range .Ranges}}<a href="?range={{.}}#usage" {{if eq . $cur}}class="on"{{end}}>{{.}}</a>{{end}}</nav>{{end}}
 
 {{define "state"}}<span class="badge s-{{.}}">{{.}}</span>{{end}}

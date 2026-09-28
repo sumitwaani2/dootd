@@ -12,7 +12,7 @@ This plan builds dootd in phases. Each phase ends with something that works and 
 | 3 | Edge | :443, CF-only, Origin CA, AOP, host routing, DNS | ✅ |
 | 4 | Dashboard | Login + the full click-to-deploy flow in the browser | ✅ |
 | 5 | Backups | Scheduled, pre-deploy and manual backups to S3/R2, plus restore | ✅ |
-| 6 | Monitoring | Host and app metrics, request stats, charts, warnings | ⬜ |
+| 6 | Monitoring | Host and app metrics, request stats, charts, warnings | ✅ |
 | 7 | Install and self-update → v1.0 | One-line install, `dootd init`, update from the UI, hardening | ⬜ |
 
 Phases 1–3 are mostly used through the CLI or a config file, so the risky parts (cgroups, builds, TLS) get proven before any UI work. Phase 4 connects everything to the browser.
@@ -97,12 +97,12 @@ Phases 1–3 are mostly used through the CLI or a config file, so the risky part
 
 ## Phase 6: Monitoring
 
-- [ ] Collector: host `/proc` + `statfs`, per-app cgroup stats, proxy counters, and supervisor stats, every 10 s.
-- [ ] Ring buffer (1 h) + `metrics_1m` rollups kept for 7 days, with hourly pruning.
-- [ ] Server-rendered SVG charts: CPU, memory, requests, 5xx and p95 for the host and each app.
-- [ ] Warnings: disk > 85 %, memory > 90 %, OOM, crashed, backup failed, certificate expiring.
+- [x] Collector: host `/proc` + `statfs`, per-app cgroup stats, proxy counters, and supervisor stats, every 10 s.
+- [x] Ring buffer (1 h) + `metrics_1m` rollups kept for 7 days, with hourly pruning.
+- [x] Server-rendered SVG charts: CPU, memory, requests, 5xx and p95 for the host and each app.
+- [x] Warnings: disk > 85 %, memory > 90 %, OOM, crashed, backup failed, certificate expiring.
 
-**Done when:** the charts match `top` and `systemd-cgtop` within a reasonable margin, and dootd's own idle RSS stays under 30 MB with 5 apps running.
+**Done when:** the charts match `top` and `systemd-cgtop` within a reasonable margin, and dootd's own idle RSS stays under 30 MB with 5 apps running. Automated in `scripts/e2e/phase6.sh` (48 checks): CPU within 3 points of `cpu.stat` for a free and a 0.5-core app, memory equal to `memory.current`, dootd at 28 MB and 0.03 % CPU.
 
 ## Phase 7: Install, self-update, v1.0
 

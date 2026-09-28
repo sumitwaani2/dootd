@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"sort"
 	"syscall"
 	"time"
@@ -25,6 +26,7 @@ import (
 	"github.com/sumitwaani2/dootd/internal/edge"
 	"github.com/sumitwaani2/dootd/internal/layout"
 	"github.com/sumitwaani2/dootd/internal/logs"
+	"github.com/sumitwaani2/dootd/internal/metrics"
 	"github.com/sumitwaani2/dootd/internal/secrets"
 	"github.com/sumitwaani2/dootd/internal/store"
 	"github.com/sumitwaani2/dootd/internal/supervisor"
@@ -58,6 +60,7 @@ func serve(log *slog.Logger, cfgPath string, cfgExplicit bool, devApps, socket s
 		return errors.New("dootd serve must run as root (it manages users and cgroups)")
 	}
 	log.Info("starting", "version", buildinfo.String())
+	tuneMemory()
 
 	cfg, err := config.Load(cfgPath, cfgExplicit)
 	if err != nil {
@@ -159,6 +162,11 @@ func serve(log *slog.Logger, cfgPath string, cfgExplicit bool, devApps, socket s
 	}
 	authSvc := auth.New(st)
 
+	mc := &metrics.Collector{Store: st, Sup: sup, DataRoot: cfg.DataRoot, Log: log.With("component", "metrics")}
+	if edgeMgr != nil {
+		mc.Requests = edgeMgr.Router.Stats
+	}
+
 	edgeErr := make(chan error, 1)
 	if edgeMgr != nil {
 		for _, rt := range appSvc.Routes() {
@@ -168,7 +176,9 @@ func serve(log *slog.Logger, cfgPath string, cfgExplicit bool, devApps, socket s
 		}
 		dash := &web.Server{
 			Auth: authSvc, Apps: appSvc, Dep: dep, Sup: sup, Edge: edgeMgr, Zig: dep.Zig, Store: st,
-			Backups: bk, MasterKeyPath: cfg.MasterKey,
+			Backups: bk, MasterKeyPath: cfg.MasterKey, Metrics: mc,
+			Thresholds: web.Thresholds{DiskPercent: cfg.Monitoring.DiskWarnPercent,
+				MemoryPercent: cfg.Monitoring.MemoryWarnPercent, CertDays: cfg.Monitoring.CertWarnDays},
 			Layout: lay, Host: cfg.Edge.DashboardDomain, Version: buildinfo.Version, Log: log.With("component", "web"),
 		}
 		h, err := dash.Handler()
@@ -188,13 +198,14 @@ func serve(log *slog.Logger, cfgPath string, cfgExplicit bool, devApps, socket s
 		edgeMgr.Run(runCtx)
 	}
 
-	ctl := &control.Server{Sup: sup, Dep: dep, Edge: edgeMgr, Auth: authSvc, Backups: bk, Layout: lay, Log: log}
+	ctl := &control.Server{Sup: sup, Dep: dep, Edge: edgeMgr, Auth: authSvc, Backups: bk, Metrics: mc, Layout: lay, Log: log}
 	ctlErr := make(chan error, 1)
 	go func() { ctlErr <- ctl.Serve(runCtx, socket) }()
 	log.Info("control socket ready", "path", socket)
 
 	dep.Run(runCtx)
 	bk.Schedule(runCtx)
+	mc.Run(runCtx)
 	go sup.StartAll(runCtx, func(name string) bool { return dep.DesiredRunning(runCtx, name) })
 
 	usr1 := make(chan os.Signal, 1)
@@ -228,6 +239,7 @@ loop:
 	log.Info("shutting down: cancelling deployments")
 	dep.Stop()
 	waitUploads(log, bk, 20*time.Second)
+	mc.Wait()
 	log.Info("stopping apps")
 	stopCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -375,4 +387,22 @@ func keys(m map[string]bool) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// tuneMemory keeps dootd inside its 30 MB resident budget (Req 1.3): a
+// soft heap limit makes the GC run more often before the heap grows, and
+// freed memory is handed back to the kernel every 2 minutes instead of
+// being kept for reuse. GOMEMLIMIT / GOGC in the environment override.
+func tuneMemory() {
+	if os.Getenv("GOMEMLIMIT") == "" {
+		debug.SetMemoryLimit(12 << 20)
+	}
+	if os.Getenv("GOGC") == "" {
+		debug.SetGCPercent(50)
+	}
+	go func() {
+		for range time.Tick(2 * time.Minute) {
+			debug.FreeOSMemory()
+		}
+	}()
 }

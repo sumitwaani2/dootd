@@ -353,6 +353,8 @@ type Stats struct {
 	CPUUsageUsec  int64 // cumulative
 	PidsCurrent   int64
 	OOMKills      int64 // cumulative memory.events oom_kill
+	IOReadBytes   int64 // cumulative, all devices (io.stat rbytes)
+	IOWriteBytes  int64 // cumulative, all devices (io.stat wbytes)
 }
 
 // Stats reads the group's counters. Files of unavailable controllers read as 0.
@@ -375,7 +377,31 @@ func (g *Group) Stats() (Stats, error) {
 		return s, fmt.Errorf("cgroup: %w", err)
 	}
 	s.OOMKills = ev["oom_kill"]
+	s.IOReadBytes, s.IOWriteBytes = readIOStat(filepath.Join(g.Path, "io.stat"))
 	return s, nil
+}
+
+// readIOStat sums rbytes/wbytes over all devices in io.stat
+// ("8:0 rbytes=1 wbytes=2 rios=3 ..." per line).
+func readIOStat(path string) (r, w int64) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0, 0
+	}
+	for _, f := range strings.Fields(string(b)) {
+		k, v, ok := strings.Cut(f, "=")
+		if !ok {
+			continue
+		}
+		n, _ := strconv.ParseInt(v, 10, 64)
+		switch k {
+		case "rbytes":
+			r += n
+		case "wbytes":
+			w += n
+		}
+	}
+	return r, w
 }
 
 // Remove deletes the (empty) group.

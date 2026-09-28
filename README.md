@@ -23,7 +23,7 @@ Cloudflare (proxied, Full strict) ──HTTPS──► dootd (TLS + routing + da
 
 ## Status
 
-🚧 Phases 1-5 of 7 are done: a web dashboard to add apps, set env vars, deploy, roll back and watch logs; builds from git with the pinned Zig; health-checked deploys with automatic rollback; per-app users and cgroup limits; HTTPS on :443 behind Cloudflare (Origin CA certificates, Cloudflare-only access with Authenticated Origin Pulls, DNS records); SQLite backups to R2/S3 every 3 hours and before each deploy, with one-click restore. Monitoring charts and the one-line installer come next. Progress is tracked in the [Kiro spec](.kiro/specs/dootd/tasks.md).
+🚧 Phases 1-6 of 7 are done: a web dashboard to add apps, set env vars, deploy, roll back and watch logs; builds from git with the pinned Zig; health-checked deploys with automatic rollback; per-app users and cgroup limits; HTTPS on :443 behind Cloudflare (Origin CA certificates, Cloudflare-only access with Authenticated Origin Pulls, DNS records); SQLite backups to R2/S3 every 3 hours and before each deploy, with one-click restore; CPU, memory, disk and request charts for the server and every app, with warnings. The one-line installer, `dootd init` and self-update come next (Phase 7). Progress is tracked in the [Kiro spec](.kiro/specs/dootd/tasks.md).
 
 ### Try it on a test VPS
 
@@ -34,6 +34,7 @@ sudo ./scripts/e2e/phase2.sh   # deploys from local git repos with `dootd ctl`, 
 sudo ./scripts/e2e/phase3.sh   # :443 edge against a fake Cloudflare API, 50 checks
 sudo ./scripts/e2e/phase4.sh   # the dashboard, driven with curl through the edge, 83 checks
 sudo ./scripts/e2e/phase5.sh   # backups and restores with rclone serve s3 as the bucket, 55 checks
+sudo ./scripts/e2e/phase6.sh   # monitoring numbers against the kernel's counters, charts, warnings, dootd's budget, 48 checks
 ```
 
 The scripts install dootd as a systemd service (phases 1–3 with a test-only `--dev-apps` file). Needs Go installed. While dootd runs, `sudo systemctl kill -s USR1 --kill-whom=main dootd` prints every app's status to `journalctl -u dootd`.

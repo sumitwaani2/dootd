@@ -30,6 +30,7 @@ Usage:
 
 Commands:
   status                        List apps and their state
+  top                           Current CPU, memory, I/O and requests of the server, dootd and each app
   deploy <app> [--detach]       Build the branch HEAD and deploy it (streams the build log)
   rollback <app> <release>      Switch back to a kept release (no build)
   releases <app>                List kept releases
@@ -114,6 +115,8 @@ func runCtl(args []string, stdout, stderr io.Writer) int {
 		switch cmd {
 		case "status":
 			return ctlStatus(c, stdout)
+		case "top":
+			return ctlTop(c, stdout)
 		case "deploy":
 			return ctlDeploy(c, rest, stdout)
 		case "rollback":
@@ -526,4 +529,30 @@ func ctlBackup(c *ctlClient, cmd string, args []string, out io.Writer) error {
 		return nil
 	}
 	return fmt.Errorf("usage: dootd ctl %s <app>%s", cmd, map[bool]string{true: " <backup id>"}[cmd == "restore"])
+}
+
+func ctlTop(c *ctlClient, out io.Writer) error {
+	var ms []control.MetricView
+	if err := c.do(http.MethodGet, "/v1/metrics", nil, &ms); err != nil {
+		return err
+	}
+	mb := func(n int64) string { return fmt.Sprintf("%.1fM", float64(n)/(1<<20)) }
+	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "SCOPE\tCPU%\tMEM\tLIMIT\tPIDS\tREAD/s\tWRITE/s\tREQ/min\t5XX/min\tP95ms")
+	for _, m := range ms {
+		p95 := "-"
+		if m.P95 != nil {
+			p95 = fmt.Sprintf("%.0f", *m.P95)
+		}
+		name := m.Scope
+		switch name {
+		case "_host":
+			name = "(server)"
+		case "_dootd":
+			name = "(dootd)"
+		}
+		fmt.Fprintf(tw, "%s\t%.1f\t%s\t%s\t%d\t%s\t%s\t%.1f\t%.1f\t%s\n", name, m.CPU, mb(m.Mem), mb(m.MemLimit), m.Pids,
+			mb(int64(m.IORead)), mb(int64(m.IOWrite)), m.Req, m.Req5xx, p95)
+	}
+	return tw.Flush()
 }
