@@ -99,11 +99,18 @@ func (s *Spec) Validate() error {
 	if s.Port < 1024 || s.Port > 65535 {
 		errs = append(errs, fmt.Errorf("app %q: port %d out of range 1024-65535", s.Name, s.Port))
 	}
-	if !strings.HasPrefix(s.ReleaseDir, "/") {
-		errs = append(errs, fmt.Errorf("app %q: release dir must be an absolute path", s.Name))
+	// An app without a release (never deployed) has no release dir or run
+	// command yet.
+	if s.ReleaseID != "" {
+		if !strings.HasPrefix(s.ReleaseDir, "/") {
+			errs = append(errs, fmt.Errorf("app %q: release dir must be an absolute path", s.Name))
+		}
+		if len(s.Run) == 0 || s.Run[0] == "" {
+			errs = append(errs, fmt.Errorf("app %q: run command is empty", s.Name))
+		}
 	}
-	if len(s.Run) == 0 || s.Run[0] == "" {
-		errs = append(errs, fmt.Errorf("app %q: run command is empty", s.Name))
+	if s.HealthPath == "" {
+		s.HealthPath = DefaultHealthPath
 	}
 	if !strings.HasPrefix(s.HealthPath, "/") {
 		errs = append(errs, fmt.Errorf("app %q: health path must start with '/'", s.Name))

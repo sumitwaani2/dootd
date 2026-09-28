@@ -71,7 +71,7 @@ All components are goroutines inside one process and talk to each other through 
 ## 5. Code layout
 
 ```
-cmd/dootd/            main: subcommands (serve, init, reset-password, version)
+cmd/dootd/            main: subcommands (serve, ctl, init, reset-password, version)
 internal/
   config/             static config file + defaults
   store/              SQLite schema, migrations, queries
@@ -83,7 +83,9 @@ internal/
   github/             PAT validation, repo/branch listing, clone via go-git
   toolchain/          zig download/verify/cache
   builder/            build workspace, run build in cgroup, capture build log
-  deployer/           deploy state machine, releases, rollback
+  manifest/           dootd.toml parsing + validation
+  deployer/           deploy queue + pipeline, releases, rollback, history
+  control/            local admin API on a Unix socket (used by `dootd ctl`)
   supervisor/         process lifecycle, restart policy, log capture
   cgroup/             cgroup v2 create/limit/read-stats, delegation setup
   users/              per-app system users
@@ -129,7 +131,9 @@ The last **3 releases** are kept for instant rollback. Older ones are deleted af
 | `sessions` | id_hash, user_id, created_at, expires_at, last_seen |
 | `apps` | id, name, type, repo, branch, domain, port, uid, mem_max, cpu_max, pids_max, build_mem_max, build_timeout, desired_state (running/stopped), current_release |
 | `app_env` | app_id, name, value* |
-| `deployments` | id, app_id, release_id, git_sha, status, started_at, finished_at, error, trigger (deploy/redeploy/rollback) |
+| `deployments` | id, app, kind (deploy/rollback), status (queued/building/deploying/succeeded/failed), release_id, git_sha, error, created/started/finished_at |
+| `releases` | app, id, git_sha, subject, branch, subdir, zig_version, run (JSON argv), health_path, created_at (only kept releases) |
+| `app_state` | app, desired_state (running/stopped) |
 | `backups` | id, app_id, object_key, kind (scheduled/pre-deploy/manual), size, created_at, status |
 | `certs` | hostname, cf_cert_id, not_after |
 | `metrics_1m` | ts, scope (host/app id), cpu, mem, pids, rx/tx, req_count, req_5xx, p50/p95 ms |
@@ -252,10 +256,10 @@ dootd.service/
 Only **one build runs at a time** across the whole server, so small VPSes aren't overloaded. A second deploy request waits in a queue, and the UI shows it as queued.
 
 ```
-Deploy clicked
- 1. Resolve branch HEAD SHA via GitHub (PAT)
- 2. Shallow clone (depth 1) into builds/<app>/<release-id>/         [app keeps serving]
- 3. Parse + validate dootd.toml (contract version, zig_version, run)
+Deploy clicked (Phase 2: `dootd ctl deploy <app>`)
+ 1-2. Shallow clone (depth 1, single branch) into builds/<app>/<deployment-id>/,
+      record the HEAD SHA, remove .git; release id = <UTC time>-<sha7>   [app keeps serving]
+ 3. Parse + validate dootd.toml in the app root (repo root or the app's path)
  4. Ensure toolchain: toolchains/zig/<version>/ (download if missing)
  5. Run `build` as app user, in builds/<app> cgroup, env = user env + PATH/CC/CXX,
     cwd = workspace, timeout = build_timeout; stream log
@@ -273,7 +277,12 @@ Deploy clicked
      (DB is NOT restored automatically; UI offers "Restore pre-deploy backup")
 ```
 
-- If a build fails at steps 2–7, the running app is never affected.
+- If a build fails at steps 2–7, the running app is never affected (verified in E2E: same PID keeps serving).
+- A release that fails its health check is deleted; the previous release is restored and restarted only if it was running before.
+- Build logs are stored per deployment (`logs/builds/<deployment-id>.log`, last 20 kept) and streamed live by tailing the file.
+- On startup, deployments left `queued/building/deploying` by a crash or restart are marked failed, and `builds/<app>/` is emptied. A shutdown cancels the running build; a switch that already started (steps 8–13) always completes with a detached context so `current` and the running process never disagree.
+- Release metadata (SHA, commit subject, subdir, zig version, `run`, `health_path`) is stored in the `releases` table, so rollbacks and restarts don't re-read `dootd.toml`.
+- Whether each app should run after a restart is stored in `app_state` (stopping an app keeps it stopped across dootd restarts).
 - **Redeploy** runs the same pipeline from the latest commit. **Rollback** runs only steps 8–13 using an earlier release, with no build.
 - Deploys only ever happen when you click. There are no webhooks.
 
@@ -285,7 +294,12 @@ Deploy clicked
 
 ### 11.2 GitHub
 - A fine-grained PAT with **Contents: Read-only** on the selected repos is enough. dootd validates it when it's saved and uses it to list repos and branches in the "Add app" form.
-- The PAT is only used as HTTP basic auth for go-git, in memory. It is never written to disk in plain text or into `.git/config`.
+- The PAT is only used as HTTP basic auth (`x-access-token`) for go-git, in memory, and **only for `github.com` URLs**. It is never written to disk in plain text or into `.git/config` (`.git` is deleted after the clone). It is stored sealed in `settings` under purpose `settings:github_token`.
+- `file:///` repositories are accepted for development and the E2E tests.
+
+### 11.3 Control socket (`dootd ctl`)
+- `dootd serve` listens on `/run/dootd/dootd.sock` (0600, root only) with a small HTTP/JSON API: app status, deploy, rollback, start/stop/restart, releases, deployments, build log (follow), app logs (follow), GitHub token.
+- `dootd ctl` is the CLI for it. Until the dashboard exists (Phase 4) it is how apps are deployed; afterwards it stays as the SSH fallback. The dashboard will call the same deployer and supervisor methods directly.
 
 ## 12. Backups
 
@@ -372,3 +386,6 @@ The last 2 `.pre-restore` folders are kept.
 | D10 | Kill cgroups by PID, not `cgroup.kill` | `cgroup.kill` makes later `CLONE_INTO_CGROUP` children die instantly on current Ubuntu kernels |
 | D11 | No `memory.high`, swap and zswap off for apps | Predictable OOM + restart instead of an app stalled near its limit |
 | D12 | E2E scripts run on GitHub-hosted Ubuntu 24.04 VMs | Real systemd + full cgroup v2; catches kernel behaviour unit tests cannot |
+| D13 | Clone as root, chown to the app user for the build, then make the tree root-owned (never following symlinks, skipping files owned by others) | The build can't escape into other users' files, and the app can't modify its own release |
+| D14 | Optional app path (monorepo subdirectory) | Lets one repo hold several apps; also lets E2E deploy `examples/*` straight from this repo |
+| D15 | Local admin API on a Unix socket + `dootd ctl` | Deploys before the dashboard exists; permanent SSH fallback; no network exposure |

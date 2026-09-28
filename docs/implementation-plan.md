@@ -7,8 +7,8 @@ This plan builds dootd in phases. Each phase ends with something that works and 
 | Phase | Name | Outcome | Status |
 |---|---|---|---|
 | 0 | Foundations | Repo, CI, release pipeline, test VPS | ✅ |
-| 1 | Run an app | Supervise a local binary with users, cgroups and logs | 🟨 |
-| 2 | Build and deploy | GitHub → Zig build → release → health-checked deploy and rollback | ⬜ |
+| 1 | Run an app | Supervise a local binary with users, cgroups and logs | ✅ |
+| 2 | Build and deploy | GitHub → Zig build → release → health-checked deploy and rollback | ✅ |
 | 3 | Edge | :443, CF-only, Origin CA, AOP, host routing, DNS | ⬜ |
 | 4 | Dashboard | Login + the full click-to-deploy flow in the browser | ⬜ |
 | 5 | Backups | Scheduled, pre-deploy and manual backups to S3/R2, plus restore | ⬜ |
@@ -47,15 +47,15 @@ Phases 1–3 are mostly used through the CLI or a config file, so the risky part
 
 ## Phase 2: Build and deploy
 
-- [ ] `github`: validate the PAT, resolve the branch SHA, shallow clone with go-git.
-- [ ] `dootd.toml` parser and validator with clear error messages (app-contract §2).
-- [ ] `toolchain`: read `index.json`, download, check SHA-256, extract xz safely (no path traversal), install atomically, list and delete.
-- [ ] `builder`: run the build as the app user in `builds/<app>` with a memory limit, CPU weight, timeout, PATH/CC/CXX and a persistent zig cache; stream the build log.
-- [ ] `deployer`: the full pipeline from architecture §11, including the global build queue, `current` symlink swap, rollback when the health check fails, and pruning to 3 releases.
-- [ ] Rollback to any of the kept releases, with no build.
-- [ ] A temporary CLI to trigger `deploy <app>`, removed or hidden after Phase 4.
+- [x] `github`: validate the PAT, resolve the branch SHA, shallow clone with go-git.
+- [x] `dootd.toml` parser and validator with clear error messages (app-contract §2).
+- [x] `toolchain`: read `index.json`, download, check SHA-256, extract xz safely (no path traversal), install atomically, list and delete.
+- [x] `builder`: run the build as the app user in `builds/<app>` with a memory limit, CPU weight, timeout, PATH/CC/CXX and a persistent zig cache; stream the build log.
+- [x] `deployer`: the full pipeline from architecture §11, including the global build queue, `current` symlink swap, rollback when the health check fails, and pruning to 3 releases.
+- [x] Rollback to any of the kept releases, with no build.
+- [x] `dootd ctl` over a local Unix socket to deploy, roll back and inspect apps (kept as the SSH fallback after Phase 4).
 
-**Done when:** both sample apps deploy from GitHub with their pinned Zig version. A broken commit leaves the old version serving, and a failing health check rolls back automatically.
+**Done when:** both sample apps deploy from GitHub with their pinned Zig version. A broken commit leaves the old version serving, and a failing health check rolls back automatically. Automated in `scripts/e2e/phase2.sh` (64 checks, including a private GitHub clone of this repo's PR branch).
 
 ## Phase 3: Edge
 

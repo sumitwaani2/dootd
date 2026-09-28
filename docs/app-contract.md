@@ -47,11 +47,13 @@ health_path = "/healthz"
 |---|---|---|---|
 | `contract` | yes | — | Always `1` for now. |
 | `zig_version` | yes | — | Exact release, for example `0.14.1`. dootd downloads it, verifies its checksum and caches it. The deploy fails if this version doesn't exist. |
-| `build` | no | `zig build -Doptimize=ReleaseSafe` (zig) / `make` (c) | Runs from the repo root. |
+| `build` | no | `zig build -Doptimize=ReleaseSafe` (zig) / `make` (c) | Runs with `/bin/sh -c` from the app root, so `&&` and `;` work. |
 | `run` | yes | — | Binary path plus arguments. It is **not run through a shell**, so pipes, `&&` and `$VAR` expansion don't work. |
 | `health_path` | no | `/` | Must return 2xx or 3xx within 30 s of start. |
 
 The app type (`zig` or `c`) is chosen in the dashboard. It only changes the default `build` command.
+
+**App root.** By default `dootd.toml` sits at the repo root. For a monorepo you can set an app **path** (for example `apps/blog`) in dootd; then `dootd.toml` lives in that folder, and the build, `run` and the app's working directory are all relative to it. Unknown keys in `dootd.toml` are rejected, so typos fail the deploy instead of being ignored.
 
 ### Build environment
 
@@ -61,6 +63,9 @@ The app type (`zig` or `c`) is chosen in the dashboard. It only changes the defa
 - Outbound network is allowed during the build, so `zig build` can fetch dependencies from `build.zig.zon`.
 - Default build limits are **1 GB RAM** and a **15 minute** timeout. Both can be changed per app in the dashboard.
 - Your env vars are **also available during the build**.
+- The build runs as the app's own user (`dootd-<app>`). `HOME`, `TMPDIR`, `ZIG_GLOBAL_CACHE_DIR` and `ZIG_LOCAL_CACHE_DIR` point to a per-app cache that survives between deploys, so rebuilds (including `zig cc` C compiles and `build.zig.zon` packages) are fast. `DOOTD_BUILD=1` is set.
+- The checkout is shallow (depth 1) and `.git` is removed, so the build can't read git history or run `git describe`.
+- After the build, the whole tree becomes root-owned and read-only for the app. Anything the app must write at runtime goes in `$DATA_DIR` or `$TMPDIR`.
 
 ---
 

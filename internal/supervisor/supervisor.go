@@ -124,13 +124,22 @@ func (s *Supervisor) Apps() []*App {
 	return out
 }
 
-// StartAll starts the given apps one at a time (Req 10.7), waiting for each
-// to become healthy or fail before starting the next. Failures are logged;
+// StartAll starts apps one at a time (Req 10.7), waiting for each to
+// become healthy or fail before starting the next. Apps without a release
+// and apps for which want returns false are skipped. Failures are logged;
 // failed apps keep retrying under the restart policy.
-func (s *Supervisor) StartAll(ctx context.Context) {
+func (s *Supervisor) StartAll(ctx context.Context, want func(name string) bool) {
 	for _, a := range s.Apps() {
 		if ctx.Err() != nil {
 			return
+		}
+		if a.Spec().ReleaseID == "" {
+			s.deps.Log.Info("app not started: never deployed", "app", a.Spec().Name)
+			continue
+		}
+		if want != nil && !want(a.Spec().Name) {
+			s.deps.Log.Info("app not started: it was stopped by the operator", "app", a.Spec().Name)
+			continue
 		}
 		if err := a.Start(ctx); err != nil {
 			s.deps.Log.Error("app failed to start", "app", a.Spec().Name, "err", err)

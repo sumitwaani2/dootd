@@ -18,6 +18,7 @@ Commands:
   serve            Run the dootd service (normally started by systemd)
   init             Interactive first-time setup
   reset-password   Reset the dashboard admin password
+  ctl              Control a running dootd (deploy, rollback, status, logs)
   version          Print version information
   help             Show this help
 `
@@ -41,6 +42,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	case "serve":
 		return runServe(args[1:], stderr)
+	case "ctl":
+		return runCtl(args[1:], stdout, stderr)
 	case "init", "reset-password":
 		fmt.Fprintf(stderr, "dootd: %q is not implemented yet in %s\n", args[0], buildinfo.Version)
 		return 1

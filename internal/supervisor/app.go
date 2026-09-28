@@ -82,6 +82,9 @@ type Status struct {
 // ErrStopped is returned to Start waiters when the app is stopped meanwhile.
 var ErrStopped = errors.New("app was stopped")
 
+// ErrNoRelease is returned by Start for an app that was never deployed.
+var ErrNoRelease = errors.New("app has no release yet; deploy it first")
+
 type op int
 
 const (
@@ -277,6 +280,10 @@ func (a *App) loop() {
 }
 
 func (a *App) handleStart(reply chan error) {
+	if a.Spec().ReleaseID == "" {
+		reply <- ErrNoRelease
+		return
+	}
 	a.desired = Running
 	switch a.state() {
 	case Running:
