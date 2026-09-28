@@ -60,11 +60,7 @@ func serve(log *slog.Logger, cfgPath string, cfgExplicit bool, devApps, socket s
 		return errors.New("dootd serve must run as root (it manages users and cgroups)")
 	}
 	log.Info("starting", "version", buildinfo.String())
-	// A soft heap limit keeps dootd well inside its 30 MB budget; the GC
-	// simply runs more often near it (GOMEMLIMIT overrides).
-	if os.Getenv("GOMEMLIMIT") == "" {
-		debug.SetMemoryLimit(20 << 20)
-	}
+	tuneMemory()
 
 	cfg, err := config.Load(cfgPath, cfgExplicit)
 	if err != nil {
@@ -391,4 +387,22 @@ func keys(m map[string]bool) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// tuneMemory keeps dootd inside its 30 MB resident budget (Req 1.3): a
+// soft heap limit makes the GC run more often before the heap grows, and
+// freed memory is handed back to the kernel every 2 minutes instead of
+// being kept for reuse. GOMEMLIMIT / GOGC in the environment override.
+func tuneMemory() {
+	if os.Getenv("GOMEMLIMIT") == "" {
+		debug.SetMemoryLimit(12 << 20)
+	}
+	if os.Getenv("GOGC") == "" {
+		debug.SetGCPercent(50)
+	}
+	go func() {
+		for range time.Tick(2 * time.Minute) {
+			debug.FreeOSMemory()
+		}
+	}()
 }

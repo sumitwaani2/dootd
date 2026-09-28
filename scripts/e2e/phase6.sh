@@ -159,10 +159,9 @@ check "within 10% of memory.current" between "$(python3 -c "print(abs($DM-$KM)/$
 say "Requests, errors and latency"
 for _ in $(seq 1 40); do app / >/dev/null; done
 for _ in $(seq 1 10); do app /fail >/dev/null || true; done
-sleep 11
-check "requests/min reported" between "$(m one req)" 1 100000
-check "5xx/min reported" between "$(m one req_5xx)" 1 100000
-check "p95 latency reported" test -n "$(m one p95_ms)"
+# The sample holding the burst is the latest one for about 10 s: poll for it.
+traffic_seen() { between "$(m one req)" 1 100000 && between "$(m one req_5xx)" 1 100000 && [ -n "$(m one p95_ms)" ]; }
+check "requests/min, 5xx/min and p95 latency reported" wait_for 15 traffic_seen
 check "apps without traffic report 0 requests" test "$(m half req)" = 0
 
 say "Warnings"
@@ -225,6 +224,7 @@ T1="$(awk '{print $14+$15}' "/proc/$PID/stat")"
 RSS="$(awk '/^VmRSS/ {print $2*1024}' "/proc/$PID/status")"
 CPU="$(python3 -c "print(($T1-$T0)/100/60*100)")"
 echo "  dootd: $((RSS >> 20)) MB resident, ${CPU}% CPU over 60 s"
+grep -E '^(Rss|Pss_Anon|Pss_File|Anonymous)' "/proc/$PID/smaps_rollup" | sed 's/^/    /' || true
 check "resident memory under 30 MB" test "$RSS" -lt $((30 << 20))
 check "CPU under 1% while idle" between "$CPU" 0 1
 check "dootd's self-report matches /proc (within 20%)" between "$(python3 -c "print(abs($(m _dootd mem)-$RSS)/$RSS)")" 0 0.2
