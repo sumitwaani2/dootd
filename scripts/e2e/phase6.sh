@@ -63,8 +63,11 @@ svg_ok() { # svg_ok <query> <min paths>: valid SVG with at least N data lines
   python3 - "$f" "$2" <<'PY'
 import sys, xml.etree.ElementTree as ET
 r = ET.parse(sys.argv[1]).getroot()
-paths = [p for p in r.iter('{http://www.w3.org/2000/svg}path') if not p.get('stroke-dasharray')]
-sys.exit(0 if len(paths) >= int(sys.argv[2]) else 1)
+ns = '{http://www.w3.org/2000/svg}'
+# A line is a solid path, or circles for points without neighbours.
+colors = {p.get('stroke') for p in r.iter(ns + 'path') if not p.get('stroke-dasharray')}
+colors |= {c.get('fill') for c in r.iter(ns + 'circle')}
+sys.exit(0 if len(colors) >= int(sys.argv[2]) else 1)
 PY
 }
 
@@ -201,7 +204,7 @@ check "server load chart (7d)" svg_ok "scope=_host&chart=load&range=7d" 1
 check "server disk chart (24h)" svg_ok "scope=_host&chart=disk&range=24h" 1
 check "dootd memory chart" svg_ok "scope=_dootd&chart=memory&range=1h" 1
 check "app requests chart has requests + 5xx" svg_ok "scope=one&chart=requests&range=24h" 2
-check "app latency chart" svg_ok "scope=one&chart=latency&range=24h" 1
+check "app latency chart has p50 + p95" svg_ok "scope=one&chart=latency&range=24h" 2
 check "unknown scope: 404" test "$(dc -o /dev/null -w '%{http_code}' "https://$D/charts?scope=nope&chart=cpu")" = 404
 check "unknown chart: 404" test "$(dc -o /dev/null -w '%{http_code}' "https://$D/charts?scope=one&chart=nope")" = 404
 check "charts need a session" test "$(curl -sS "${TLS[@]}" -o /dev/null -w '%{http_code}' "https://$D/charts?scope=_host&chart=cpu")" = 303
