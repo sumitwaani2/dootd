@@ -120,22 +120,25 @@ Tasks are grouped by the phases in `docs/implementation-plan.md`. Each phase end
 
 ## Phase 5: Backups
 
-- [ ] 33. `s3` wrapper (multipart put, list, get, delete, connection test)
+- [x] 33. `s3` wrapper (multipart put, list, get, delete, connection test)
   - _Requirements: 6.3, 14.3_
-- [ ] 33b. Settings page: S3 endpoint, bucket and keys (sealed), test upload + delete
+- [x] 33b. Settings page: S3 endpoint, bucket and keys (sealed), test upload + delete
   - _Requirements: 3.1, 6.3_
-- [ ] 34. Snapshot: header detection, `VACUUM INTO`, `quick_check`
+- [x] 34. Snapshot: header detection, `VACUUM INTO`, `quick_check`
   - _Requirements: 14.2_
-- [ ] 35. Archive + manifest + upload with retries; scheduler (3 h), manual, pre-deploy hook
+- [x] 35. Archive + manifest + upload with retries; scheduler (3 h), manual, pre-deploy hook
   - _Requirements: 14.1, 14.3_
-- [ ] 36. Retention (48 h, always keep the newest)
+- [x] 36. Retention (48 h, always keep the newest)
   - _Requirements: 14.4_
   - [ ]* 36.1 Unit tests for retention selection
-- [ ] 37. Restore flow with verification and `.pre-restore` folders (keep 2)
+- [x] 37. Restore flow with verification and `.pre-restore` folders (keep 2)
   - _Requirements: 15.1, 15.2, 15.3_
-- [ ] 38. Daily `dootd.db` backup, recovery kit download + reminder, failure badges
+- [x] 38. Daily `dootd.db` backup, recovery kit download + reminder, failure badges
   - _Requirements: 14.5, 14.6_
-- [ ] 39. Phase 5 checkpoint: delete-and-restore test; retention verified on R2; a backup taken under heavy writes passes `integrity_check`
+- [x] 38b. Configurable `[backups] interval/retention`; local copies (2, plus un-uploaded ones during an outage); retry of failed uploads; `dootd ctl backup | backups | restore`; delete-app option to remove backups
+  - _Requirements: 7.4, 14.1, 14.3_
+- [x] 39. Phase 5 checkpoint: delete-and-restore test; retention verified on R2; a backup taken under heavy writes passes `integrity_check`
+  - Automated: `scripts/e2e/phase5.sh` (55 checks, `rclone serve s3` as the bucket). Re-check against real R2 on the Phase 7 VPS run.
 
 ## Phase 6: Monitoring
 
@@ -154,8 +157,10 @@ Tasks are grouped by the phases in `docs/implementation-plan.md`. Each phase end
 
 - [ ] 45. Full `install.sh` (directories, master key, systemd unit with `Delegate=yes`, `make`, swapfile and ufw prompts)
   - _Requirements: 2.4_
-- [ ] 46. `dootd init` interactive bootstrap and `dootd reset-password`
+- [ ] 46. `dootd init` interactive bootstrap (`dootd reset-password` done in task 31)
   - _Requirements: 2.5, 2.6_
+- [ ] 46b. `dootd init --restore <recovery kit>`: rebuild a server from the kit and the bucket
+  - _Requirements: 14.6_
 - [ ] 47. Self-update: release check, verification, atomic swap, `.prev` + pre-update DB copy, `ExecStartPre` fallback
   - _Requirements: 17.1–17.4_
 - [ ] 48. Hardening: fuzzing (toml, tar/xz), `-race`, fd limits, restart timing with 5 apps

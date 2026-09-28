@@ -111,7 +111,8 @@ Your own env vars from the dashboard are added on top. Names starting with `DOOT
 | Everything else | no access | — | — |
 
 - Static files and templates in your repo can be read with relative paths, because the working directory is the release dir.
-- **Only SQLite databases in `$DATA_DIR` are backed up.** dootd finds them by their file header, whatever their name. Other files in `$DATA_DIR`, such as user uploads, are kept across deploys but **not** backed up in v1.
+- **Only SQLite databases in `$DATA_DIR` are backed up** (sub-folders included). dootd finds them by their file header, whatever their name. Other files in `$DATA_DIR`, such as user uploads, are kept across deploys but **not** backed up in v1.
+- Don't create folders named `.pre-restore-*` in `$DATA_DIR`: dootd uses them to keep the previous databases after a restore.
 
 ---
 

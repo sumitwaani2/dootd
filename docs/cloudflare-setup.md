@@ -42,6 +42,7 @@ Now open `https://dootd.example.com`, sign in, and:
 2. **Settings → Zones**: press **Set Full (strict)** if it's offered.
 3. **Apps → Add app**: repo, branch, type, domain (e.g. `blog.example.com`). dootd creates the DNS record and certificate in the background.
 4. Add env vars if needed, then press **Deploy** and watch the build log.
+5. **Settings → Backups**: add an R2 bucket (endpoint `https://<account id>.r2.cloudflarestorage.com`, region `auto`, an R2 API token with Object Read & Write on the bucket) and download the recovery kit.
 
 Over SSH, `sudo dootd ctl edge` shows the same status, and `sudo dootd reset-password` resets a forgotten password.
 
