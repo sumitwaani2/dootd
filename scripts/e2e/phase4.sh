@@ -114,7 +114,7 @@ check "wrong password: 401" test "$(login 'nope nope nope')" = 401
 check "cross-origin login refused: 403" bash -c "[ \"\$(curl -sS ${TLS[*]} -o /dev/null -w '%{http_code}' -H 'Origin: https://evil.test' --data 'email=a&password=b' https://$D/login)\" = 403 ]"
 curl -sS "${TLS[@]}" -D "$OUT/login-headers.txt" -o /dev/null -c "$JAR" -H "Origin: https://$D" \
   --data-urlencode email=admin@example.test --data-urlencode "password=$PW1" "https://$D/login"
-check "right password: redirect home" grep -qi '^location: /$' "$OUT/login-headers.txt"
+check "right password: redirect home" grep -Eqi '^location: /\s*$' "$OUT/login-headers.txt"
 check "session cookie is __Host-, Secure, HttpOnly, SameSite=Strict" \
   grep -Eqi '^set-cookie: __Host-dootd=[^;]+; Path=/; Max-Age=[0-9]+; HttpOnly; Secure; SameSite=Strict' "$OUT/login-headers.txt"
 dc -D "$OUT/home-headers.txt" -o "$OUT/home.html" "https://$D/"
