@@ -325,19 +325,28 @@ func (s *Service) Latest(ctx context.Context, app string) (Backup, bool) {
 }
 
 // Problem describes why an app's latest backup needs attention ("" = fine).
+// Backups whose upload is still in progress are skipped, so a problem
+// stays visible until a backup actually succeeds.
 func (s *Service) Problem(ctx context.Context, app string) string {
-	b, ok := s.Latest(ctx, app)
-	if !ok {
+	rows, err := s.Store.Reader().QueryContext(ctx, `SELECT `+cols+` FROM backups WHERE app = ? AND status != ? ORDER BY id DESC LIMIT 10`, app, StatusRunning)
+	if err != nil {
 		return ""
 	}
-	if b.Status == StatusFailed {
-		return "last backup failed: " + b.Error
-	}
-	if b.Error == uploadPending && time.Since(b.FinishedAt) < 30*time.Minute {
+	defer rows.Close()
+	for rows.Next() {
+		b, err := scan(rows)
+		if err != nil {
+			return ""
+		}
+		switch {
+		case b.Status == StatusFailed:
+			return "last backup failed: " + b.Error
+		case b.Error == uploadPending && time.Since(b.FinishedAt) < 30*time.Minute:
+			continue
+		case b.Error != "":
+			return "last backup is only on this server: " + b.Error
+		}
 		return ""
-	}
-	if b.Error != "" {
-		return "last backup is only on this server: " + b.Error
 	}
 	return ""
 }
@@ -416,7 +425,8 @@ func (s *Service) run(ctx context.Context, app, kind string, wait bool, lg *logs
 		}
 		m.Files = append(m.Files, ManifestFile{Path: rel})
 	}
-	name := fmt.Sprintf("%s-%s.tar.zst", start.UTC().Format("20060102T150405Z"), kind)
+	// The id keeps names unique even for two backups in the same second.
+	name := fmt.Sprintf("%s-%s-%d.tar.zst", start.UTC().Format("20060102T150405Z"), kind, id)
 	if err := os.MkdirAll(s.localDir(app), 0o700); err != nil {
 		return fail(err)
 	}
@@ -654,7 +664,7 @@ func (s *Service) BackupSelf(ctx context.Context) (Backup, error) {
 		return fail(err)
 	}
 	now := time.Now()
-	name := now.UTC().Format("20060102T150405Z") + "-dootd.db.zst"
+	name := fmt.Sprintf("%s-%d-dootd.db.zst", now.UTC().Format("20060102T150405Z"), id)
 	os.MkdirAll(s.localDir(SelfApp), 0o700)
 	local := filepath.Join(s.localDir(SelfApp), name)
 	sum, size, err := compressFile(snap, local)

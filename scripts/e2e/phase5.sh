@@ -71,8 +71,9 @@ for f in m["files"]:
 print("ok", len(m["files"]))
 PY
 }
+# --dir-cache-time 1s: the test also plants and tampers with files directly on disk.
 s3_start() { systemd-run --unit=s3mock --collect -q "$E2E-bin/rclone" serve s3 --addr 127.0.0.1:9000 \
-  --auth-key "$S3_KEY,$S3_SECRET" "$S3DIR"; wait_for 10 curl -s -o /dev/null http://127.0.0.1:9000/; }
+  --dir-cache-time 1s --auth-key "$S3_KEY,$S3_SECRET" "$S3DIR"; wait_for 10 curl -s -o /dev/null http://127.0.0.1:9000/; }
 
 [ "$(id -u)" -eq 0 ] || { echo "run as root"; exit 1; }
 cd "$(dirname "$0")/../.."
@@ -211,10 +212,13 @@ check "visits back to the backup's value again" test "$(visits)" = "$SAVED"
 say "A tampered backup is refused and the app is not touched"
 KEY_FILE="$(objects web | head -n1)"
 TAMPER_ID="$(python3 -c "import sqlite3; c=sqlite3.connect('file:$DATA_ROOT/dootd.db?mode=ro',uri=True); print(c.execute(\"SELECT id FROM backups WHERE app='web' AND object_key LIKE '%$(basename "$KEY_FILE")'\").fetchone()[0])")"
-echo "garbage" > "$KEY_FILE"
+# Flip bytes in the middle, keeping the size, like silent corruption would.
+python3 -c "import sys; p=sys.argv[1]; b=bytearray(open(p,'rb').read()); m=len(b)//2; b[m:m+8]=bytes(x^0xff for x in b[m:m+8]); open(p,'wb').write(b)" "$KEY_FILE"
+sleep 2
 rm -f "$DATA_ROOT"/backups/local/web/*
 PID_BEFORE="$(pgrep -u dootd-web -x sample-c)"
 check "restore of tampered backup fails" bash -c "! dootd ctl restore web $TAMPER_ID 2> $OUT/tamper.txt"
+cat "$OUT/tamper.txt"
 check "error names the checksum" grep -q 'checksum does not match' "$OUT/tamper.txt"
 check "app kept running (same process)" test "$(pgrep -u dootd-web -x sample-c)" = "$PID_BEFORE"
 
@@ -222,9 +226,11 @@ say "Scheduled backups and retention"
 old="$S3DIR/$BUCKET/dootd/$HOST_ID/web"
 cp "$(objects web | tail -n1)" "$old/20200101T000000Z-scheduled.tar.zst"
 cp "$(objects web | tail -n1)" "$old/20200102T000000Z-scheduled.tar.zst"
+sleep 2
 sched_ran() { any_is scheduled true; }
 check "a scheduled backup ran (interval 30s)" wait_for 45 sched_ran
-check "objects older than the retention were deleted" wait_for 10 test ! -e "$old/20200101T000000Z-scheduled.tar.zst"
+check "objects older than the retention were deleted" wait_for 45 test ! -e "$old/20200101T000000Z-scheduled.tar.zst"
+check "the other old one too" test ! -e "$old/20200102T000000Z-scheduled.tar.zst"
 check "at most 2 local copies kept" test "$(ls $DATA_ROOT/backups/local/web | wc -l)" -le 2
 
 say "Bucket outage: upload retried later, badge meanwhile"
@@ -234,7 +240,7 @@ cat "$OUT/outage.txt"
 OUTAGE_ID="$(grep -oE 'backup #[0-9]+' "$OUT/outage.txt" | grep -oE '[0-9]+')"
 check "backup still taken locally" grep -q 'this server only' "$OUT/outage.txt"
 check "not uploaded while the bucket is down" not_uploaded "$OUTAGE_ID"
-check "dashboard shows the problem" page_has / "backup failed"
+check "dashboard shows the problem" wait_for 20 page_has / "backup failed"
 s3_start
 check "the upload is retried once the bucket is back" wait_for 90 uploaded "$OUTAGE_ID"
 check "badge cleared" wait_for 60 page_lacks / "backup failed"
