@@ -25,6 +25,7 @@ import (
 	"github.com/sumitwaani2/dootd/internal/edge"
 	"github.com/sumitwaani2/dootd/internal/layout"
 	"github.com/sumitwaani2/dootd/internal/logs"
+	"github.com/sumitwaani2/dootd/internal/metrics"
 	"github.com/sumitwaani2/dootd/internal/secrets"
 	"github.com/sumitwaani2/dootd/internal/store"
 	"github.com/sumitwaani2/dootd/internal/supervisor"
@@ -159,6 +160,11 @@ func serve(log *slog.Logger, cfgPath string, cfgExplicit bool, devApps, socket s
 	}
 	authSvc := auth.New(st)
 
+	mc := &metrics.Collector{Store: st, Sup: sup, DataRoot: cfg.DataRoot, Log: log.With("component", "metrics")}
+	if edgeMgr != nil {
+		mc.Requests = edgeMgr.Router.Stats
+	}
+
 	edgeErr := make(chan error, 1)
 	if edgeMgr != nil {
 		for _, rt := range appSvc.Routes() {
@@ -168,7 +174,9 @@ func serve(log *slog.Logger, cfgPath string, cfgExplicit bool, devApps, socket s
 		}
 		dash := &web.Server{
 			Auth: authSvc, Apps: appSvc, Dep: dep, Sup: sup, Edge: edgeMgr, Zig: dep.Zig, Store: st,
-			Backups: bk, MasterKeyPath: cfg.MasterKey,
+			Backups: bk, MasterKeyPath: cfg.MasterKey, Metrics: mc,
+			Thresholds: web.Thresholds{DiskPercent: cfg.Monitoring.DiskWarnPercent,
+				MemoryPercent: cfg.Monitoring.MemoryWarnPercent, CertDays: cfg.Monitoring.CertWarnDays},
 			Layout: lay, Host: cfg.Edge.DashboardDomain, Version: buildinfo.Version, Log: log.With("component", "web"),
 		}
 		h, err := dash.Handler()
@@ -188,13 +196,14 @@ func serve(log *slog.Logger, cfgPath string, cfgExplicit bool, devApps, socket s
 		edgeMgr.Run(runCtx)
 	}
 
-	ctl := &control.Server{Sup: sup, Dep: dep, Edge: edgeMgr, Auth: authSvc, Backups: bk, Layout: lay, Log: log}
+	ctl := &control.Server{Sup: sup, Dep: dep, Edge: edgeMgr, Auth: authSvc, Backups: bk, Metrics: mc, Layout: lay, Log: log}
 	ctlErr := make(chan error, 1)
 	go func() { ctlErr <- ctl.Serve(runCtx, socket) }()
 	log.Info("control socket ready", "path", socket)
 
 	dep.Run(runCtx)
 	bk.Schedule(runCtx)
+	mc.Run(runCtx)
 	go sup.StartAll(runCtx, func(name string) bool { return dep.DesiredRunning(runCtx, name) })
 
 	usr1 := make(chan os.Signal, 1)

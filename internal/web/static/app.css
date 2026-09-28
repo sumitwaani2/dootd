@@ -57,3 +57,8 @@ button[disabled]{opacity:.5;cursor:not-allowed}
 .pre{white-space:pre-wrap}
 pre.log{background:#0b1020;color:#d1d5db;padding:14px;border-radius:8px;font:12.5px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;max-height:70vh;overflow:auto;white-space:pre-wrap;word-break:break-all}
 @media (max-width:700px){form.grid{grid-template-columns:1fr}dl.facts{grid-template-columns:1fr}}
+.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px}
+.charts figure{margin:0}.charts figcaption{font-weight:600;font-size:13px;margin-bottom:4px}
+.charts img{width:100%;height:auto;border:1px solid var(--line);border-radius:6px;background:#fff}
+nav.ranges{display:flex;gap:4px}nav.ranges a{padding:2px 10px;border:1px solid var(--line);border-radius:999px;font-size:13px;color:var(--fg)}
+nav.ranges a.on{background:var(--accent);border-color:var(--accent);color:#fff}

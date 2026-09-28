@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -25,6 +26,7 @@ import (
 	"github.com/sumitwaani2/dootd/internal/github"
 	"github.com/sumitwaani2/dootd/internal/layout"
 	"github.com/sumitwaani2/dootd/internal/logs"
+	"github.com/sumitwaani2/dootd/internal/metrics"
 	"github.com/sumitwaani2/dootd/internal/supervisor"
 )
 
@@ -38,6 +40,7 @@ type Server struct {
 	Edge    *edge.Manager // nil when the edge is disabled
 	Auth    *auth.Auth
 	Backups *backup.Service
+	Metrics *metrics.Collector
 	Layout  layout.Layout
 	Log     *slog.Logger
 }
@@ -93,6 +96,7 @@ func (s *Server) Serve(ctx context.Context, path string) error {
 	mux.HandleFunc("PUT /v1/settings/github-token", s.githubToken)
 	mux.HandleFunc("PUT /v1/settings/cloudflare-token", s.cloudflareToken)
 	mux.HandleFunc("PUT /v1/admin", s.setAdmin)
+	mux.HandleFunc("GET /v1/metrics", s.metricsNow)
 	mux.HandleFunc("GET /v1/apps/{app}/backups", s.listBackups)
 	mux.HandleFunc("POST /v1/apps/{app}/backups", s.runBackup)
 	mux.HandleFunc("POST /v1/apps/{app}/restore", s.restore)
@@ -503,4 +507,31 @@ func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// MetricView is the latest sample of one scope.
+type MetricView struct {
+	Scope string `json:"scope"`
+	metrics.Point
+	P50 *float64 `json:"p50_ms,omitempty"`
+	P95 *float64 `json:"p95_ms,omitempty"`
+}
+
+func (s *Server) metricsNow(w http.ResponseWriter, _ *http.Request) {
+	var out []MetricView
+	for _, sc := range s.Metrics.Scopes() {
+		p, ok := s.Metrics.Latest(sc)
+		if !ok {
+			continue
+		}
+		v := MetricView{Scope: sc, Point: p}
+		if !math.IsNaN(p.P50) {
+			v.P50 = &p.P50
+		}
+		if !math.IsNaN(p.P95) {
+			v.P95 = &p.P95
+		}
+		out = append(out, v)
+	}
+	writeJSON(w, http.StatusOK, out)
 }

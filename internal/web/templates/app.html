@@ -32,6 +32,12 @@
 </section>
 </div>
 
+<section class="card" id="usage">
+  <div class="row"><h2>Usage</h2>{{template "ranges" $.Data}}</div>
+  {{with $.Data.Now}}<p class="muted">Now: CPU {{printf "%.1f" .CPU}}% of a core · memory {{bytes .Mem}} · {{.Pids}} processes · disk read {{bytes (int64 .IORead)}}/s, write {{bytes (int64 .IOWrite)}}/s · {{printf "%.0f" .Req}} requests/min</p>{{end}}
+  <div class="charts" data-refresh="10" id="app-charts">{{range $.Data.Charts}}<figure><figcaption>{{.Title}}</figcaption><img src="{{.URL}}" alt="{{.Title}} chart" width="640" height="180"></figure>{{end}}</div>
+</section>
+
 {{if not .Static}}
 <section class="card">
   <h2>Releases</h2>

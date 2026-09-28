@@ -207,8 +207,11 @@ func (s *statusWriter) code() int {
 	return s.status
 }
 
-// Latency histogram bucket upper bounds in milliseconds (last is +Inf).
-var latencyBuckets = []float64{5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000}
+// LatencyBuckets are the histogram bucket upper bounds in milliseconds;
+// the last bucket (index len) collects everything slower.
+var LatencyBuckets = []float64{5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000}
+
+var latencyBuckets = LatencyBuckets
 
 // Stats are cumulative request counters for one app (Phase 6 samples them).
 type Stats struct {
