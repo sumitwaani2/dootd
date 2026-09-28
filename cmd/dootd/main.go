@@ -44,7 +44,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runServe(args[1:], stderr)
 	case "ctl":
 		return runCtl(args[1:], stdout, stderr)
-	case "init", "reset-password":
+	case "reset-password":
+		// Shortcut for: dootd ctl admin set-password [--email E]
+		return runCtl(append([]string{"admin", "set-password"}, args[1:]...), stdout, stderr)
+	case "init":
 		fmt.Fprintf(stderr, "dootd: %q is not implemented yet in %s\n", args[0], buildinfo.Version)
 		return 1
 	default:

@@ -1,0 +1,121 @@
+{{define "content"}}
+{{$csrf := .CSRF}}
+{{with .Data.App}}
+<div id="app-status" data-refresh="5">
+<section class="card">
+  <div class="row">
+    <h1>{{.Name}} {{template "state" .Status.State}}</h1>
+    <div class="actions">
+      {{if not .Static}}<form method="post" action="/apps/{{.Name}}/deploy" class="inline">{{template "csrf" $csrf}}<button class="primary" {{if .Pending}}disabled{{end}}>Deploy</button></form>{{end}}
+      {{if eq .Status.State "stopped" "crashed"}}
+      <form method="post" action="/apps/{{.Name}}/start" class="inline">{{template "csrf" $csrf}}<button>Start</button></form>
+      {{else}}
+      <form method="post" action="/apps/{{.Name}}/restart" class="inline">{{template "csrf" $csrf}}<button>Restart</button></form>
+      <form method="post" action="/apps/{{.Name}}/stop" class="inline" data-confirm="Stop {{.Name}}? Visitors will see an error page.">{{template "csrf" $csrf}}<button>Stop</button></form>
+      {{end}}
+      <a class="button" href="/apps/{{.Name}}/logs">Logs</a>
+    </div>
+  </div>
+  {{if .Pending}}<p class="info">Deployment <a href="/deployments/{{.Pending}}">#{{.Pending}}</a> is in progress.</p>{{end}}
+  {{if .NeedsRestart}}<p class="warn">Settings or env vars changed since the app started. Restart it to apply them.</p>{{end}}
+  {{if eq .Status.State "crashed"}}<p class="error">Crashed and not being restarted: {{.Status.LastError}}</p>{{end}}
+  {{if .Static}}<p class="muted">This app comes from the test-only <code>--dev-apps</code> file and can only be started, stopped and restarted here.</p>{{end}}
+  <dl class="facts">
+    <dt>Domain</dt><dd>{{if .Domain}}<a href="https://{{.Domain}}/" target="_blank" rel="noopener">{{.Domain}}</a>{{else}}-{{end}}
+      {{with $.Data.EdgeHost}}<small class="muted">· DNS {{.DNS}} · certificate until {{date .CertUntil}}</small>{{if .Error}}<br><span class="error-text">{{.Error}}</span>{{end}}{{end}}</dd>
+    <dt>Release</dt><dd><code>{{if .Status.Release}}{{.Status.Release}}{{else}}not deployed yet{{end}}</code></dd>
+    {{if not .Static}}<dt>Source</dt><dd>{{.Repo}} <code>{{.Branch}}</code>{{if .Path}} / <code>{{.Path}}</code>{{end}}</dd>{{end}}
+    <dt>Process</dt><dd>{{if .Status.PID}}pid {{.Status.PID}}, healthy {{ago .Status.HealthyAt}}{{else}}-{{end}} · port {{.Port}}</dd>
+    <dt>Usage</dt><dd>{{bytes .MemBytes}} of {{bytes .Limits.MemoryMax}} · {{.Requests}} requests{{if .Requests5xx}} ({{.Requests5xx}} 5xx){{end}}</dd>
+    <dt>Restarts</dt><dd>{{.Status.Restarts}}{{if .Status.OOMKills}} · <span class="error-text">{{.Status.OOMKills}} out-of-memory kills</span>{{end}}{{with .Status.LastExit}} · last exit: {{.}}{{end}}</dd>
+  </dl>
+</section>
+</div>
+
+{{if not .Static}}
+<section class="card">
+  <h2>Releases</h2>
+  {{with $.Data.Releases}}
+  <table>
+    <thead><tr><th>Release</th><th>Commit</th><th>Zig</th><th>Built</th><th></th></tr></thead>
+    <tbody>{{range .}}
+    <tr>
+      <td><code>{{.ID}}</code>{{if .Current}} <span class="badge s-running">current</span>{{end}}</td>
+      <td><code>{{short .GitSHA}}</code> {{.Subject}}</td>
+      <td>{{.ZigVersion}}</td>
+      <td>{{ago .CreatedAt}}</td>
+      <td>{{if not .Current}}<form method="post" action="/apps/{{.App}}/rollback" class="inline" data-confirm="Switch to release {{.ID}}?">{{template "csrf" $csrf}}<input type="hidden" name="release" value="{{.ID}}"><button>Roll back</button></form>{{end}}</td>
+    </tr>{{end}}
+    </tbody>
+  </table>
+  {{else}}<p class="muted">No releases yet. Press Deploy to build the branch.</p>{{end}}
+</section>
+
+<section class="card">
+  <h2>Deployments</h2>
+  {{with $.Data.Deployments}}
+  <table>
+    <thead><tr><th>#</th><th>Kind</th><th>Status</th><th>Release</th><th>Started</th><th>Took</th><th>Error</th></tr></thead>
+    <tbody>{{range .}}
+    <tr>
+      <td><a href="/deployments/{{.ID}}">#{{.ID}}</a></td><td>{{.Kind}}</td><td>{{template "state" .Status}}</td>
+      <td><code>{{if .ReleaseID}}{{.ReleaseID}}{{else}}-{{end}}</code></td><td>{{ago .StartedAt}}</td><td>{{dur .StartedAt .FinishedAt}}</td>
+      <td class="clip">{{.Error}}</td>
+    </tr>{{end}}
+    </tbody>
+  </table>
+  {{else}}<p class="muted">No deployments yet.</p>{{end}}
+</section>
+
+<section class="card" id="env">
+  <h2>Environment variables</h2>
+  <p class="muted">Stored encrypted and never shown again. <code>PORT</code>, <code>HOST</code>, <code>DATA_DIR</code>, <code>TMPDIR</code> and <code>DOOTD_*</code> are set by dootd. Changes apply on the next restart or deploy.</p>
+  {{if .EnvNames}}
+  <table><tbody>{{range .EnvNames}}
+    <tr><td><code>{{.}}</code></td><td class="muted">••••••••</td>
+    <td><form method="post" action="/apps/{{$.Data.App.Name}}/env/delete" class="inline" data-confirm="Remove {{.}}?">{{template "csrf" $csrf}}<input type="hidden" name="key" value="{{.}}"><button class="link">remove</button></form></td></tr>
+  {{end}}</tbody></table>
+  {{end}}
+  <form method="post" action="/apps/{{.Name}}/env" class="grid">
+    {{template "csrf" $csrf}}
+    <label>Name <input name="key" required pattern="[A-Za-z_][A-Za-z0-9_]*" placeholder="SECRET_KEY"></label>
+    <label class="wide">Value <textarea name="value" rows="2" autocomplete="off" spellcheck="false"></textarea></label>
+    <div class="wide"><button>Save variable</button></div>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Settings</h2>
+  {{with $.Data.Edit}}
+  <form method="post" action="/apps/{{$.Data.App.Name}}/settings" class="grid">
+    {{template "csrf" $csrf}}
+    <label class="wide">GitHub repository <input name="repo" value="{{.Repo}}" required></label>
+    <label>Branch <input name="branch" value="{{.Branch}}" required></label>
+    <label>Path in repo <input name="path" value="{{.Path}}" placeholder="(repository root)"></label>
+    <label class="wide">Domain <input name="domain" value="{{.Domain}}" placeholder="(none)"></label>
+    <fieldset class="wide">
+      <legend>Limits</legend>
+      <label>Memory <input name="memory" value="{{.Memory}}" size="6"></label>
+      <label>CPU cores <input name="cpu" value="{{.CPU}}" size="4"></label>
+      <label>Processes <input name="pids" value="{{.Pids}}" size="5"></label>
+      <label>Build memory <input name="build_memory" value="{{.BuildMemory}}" size="6"></label>
+      <label>Build timeout <input name="build_timeout" value="{{.BuildTimeout}}" size="6"></label>
+    </fieldset>
+    <div class="wide"><button>Save settings</button></div>
+  </form>
+  {{end}}
+</section>
+
+<section class="card danger" id="danger">
+  <h2>Delete app</h2>
+  <p>Stops the app and removes its releases, logs, system user, DNS record and certificate.</p>
+  <form method="post" action="/apps/{{.Name}}/delete" class="grid" data-confirm="Delete {{.Name}}? This cannot be undone.">
+    {{template "csrf" $csrf}}
+    <label>Type <b>{{.Name}}</b> to confirm <input name="confirm" autocomplete="off" required></label>
+    <label class="check"><input type="checkbox" name="keep_data" value="1" checked> Keep a copy of the data directory (SQLite files)</label>
+    <div class="wide"><button class="danger">Delete {{.Name}}</button></div>
+  </form>
+</section>
+{{end}}
+{{end}}
+{{end}}

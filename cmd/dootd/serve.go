@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sumitwaani2/dootd/internal/apps"
+	"github.com/sumitwaani2/dootd/internal/auth"
 	"github.com/sumitwaani2/dootd/internal/builder"
 	"github.com/sumitwaani2/dootd/internal/buildinfo"
 	"github.com/sumitwaani2/dootd/internal/cgroup"
@@ -25,6 +27,7 @@ import (
 	"github.com/sumitwaani2/dootd/internal/store"
 	"github.com/sumitwaani2/dootd/internal/supervisor"
 	"github.com/sumitwaani2/dootd/internal/toolchain"
+	"github.com/sumitwaani2/dootd/internal/web"
 )
 
 func runServe(args []string, stderr io.Writer) int {
@@ -100,34 +103,71 @@ func serve(log *slog.Logger, cfgPath string, cfgExplicit bool, devApps, socket s
 		return err
 	}
 
+	// Test-only prebuilt/deployable apps from a file (scripts/e2e).
+	var static []string
 	if devApps != "" {
-		apps, err := config.LoadDevApps(devApps)
+		list, err := config.LoadDevApps(devApps)
 		if err != nil {
 			return err
 		}
-		for _, la := range apps {
+		for _, la := range list {
 			if err := register(ctx, log, sup, dep, la); err != nil {
 				return err
 			}
+			static = append(static, la.Spec.Name)
 		}
-	} else {
-		log.Info("no apps configured (use --dev-apps until the dashboard exists)")
 	}
 
 	runCtx, stop := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
 	var edgeMgr *edge.Manager
-	edgeErr := make(chan error, 1)
 	if cfg.Edge.Listen != "off" {
-		if edgeMgr, err = startEdge(runCtx, log, cfg, st, box, sup, dep, edgeErr); err != nil {
+		if edgeMgr, err = newEdge(ctx, log, cfg, st, box, sup, dep); err != nil {
 			return err
 		}
 	} else {
-		log.Warn("edge disabled (edge.listen = \"off\"): apps are only reachable on 127.0.0.1")
+		log.Warn("edge disabled (edge.listen = \"off\"): apps and the dashboard are only reachable on 127.0.0.1")
 	}
 
-	ctl := &control.Server{Sup: sup, Dep: dep, Edge: edgeMgr, Layout: lay, Log: log}
+	appSvc := apps.New(st, box, dep, sup, edgeMgr, cfg.Edge.DashboardDomain, log)
+	for _, n := range static {
+		appSvc.MarkStatic(n)
+	}
+	if err := appSvc.Load(ctx); err != nil {
+		return err
+	}
+	authSvc := auth.New(st)
+
+	edgeErr := make(chan error, 1)
+	if edgeMgr != nil {
+		for _, rt := range appSvc.Routes() {
+			if rt.Host == cfg.Edge.DashboardDomain {
+				return fmt.Errorf("app %s uses the dashboard domain %s", rt.App, rt.Host)
+			}
+		}
+		dash := &web.Server{
+			Auth: authSvc, Apps: appSvc, Dep: dep, Sup: sup, Edge: edgeMgr, Zig: dep.Zig, Store: st,
+			Layout: lay, Host: cfg.Edge.DashboardDomain, Version: buildinfo.Version, Log: log.With("component", "web"),
+		}
+		h, err := dash.Handler()
+		if err != nil {
+			return err
+		}
+		if cfg.Edge.DashboardDomain == "" {
+			log.Warn("no edge.dashboard_domain configured: the dashboard is not served")
+		} else {
+			edgeMgr.Router.Dashboard = h
+			if _, err := authSvc.Admin(ctx); errors.Is(err, auth.ErrNoAdmin) {
+				log.Warn("no dashboard admin yet; create it with: sudo dootd ctl admin set-password --email you@example.com")
+			}
+		}
+		appSvc.RefreshEdge()
+		go func() { edgeErr <- edgeMgr.Serve(runCtx) }()
+		edgeMgr.Run(runCtx)
+	}
+
+	ctl := &control.Server{Sup: sup, Dep: dep, Edge: edgeMgr, Auth: authSvc, Layout: lay, Log: log}
 	ctlErr := make(chan error, 1)
 	go func() { ctlErr <- ctl.Serve(runCtx, socket) }()
 	log.Info("control socket ready", "path", socket)
@@ -176,10 +216,9 @@ loop:
 	return nil
 }
 
-// startEdge builds the router from the registered apps and starts the
-// :443 listener and the Cloudflare sync loop.
-func startEdge(ctx context.Context, log *slog.Logger, cfg *config.Config, st *store.Store, box *secrets.Box,
-	sup *supervisor.Supervisor, dep *deployer.Deployer, errc chan<- error) (*edge.Manager, error) {
+// newEdge creates the edge manager and its router (not started yet).
+func newEdge(ctx context.Context, log *slog.Logger, cfg *config.Config, st *store.Store, box *secrets.Box,
+	sup *supervisor.Supervisor, dep *deployer.Deployer) (*edge.Manager, error) {
 	m, err := edge.NewManager(ctx, edge.Config{
 		Listen: cfg.Edge.Listen, DashboardHost: cfg.Edge.DashboardDomain,
 		PublicIPv4: cfg.Edge.PublicIPv4, PublicIPv6: cfg.Edge.PublicIPv6,
@@ -207,20 +246,6 @@ func startEdge(ctx context.Context, log *slog.Logger, cfg *config.Config, st *st
 			return edge.NotRunning
 		},
 	}
-	var routes []edge.Route
-	for _, a := range sup.Apps() {
-		sp := a.Spec()
-		if sp.Domain == "" {
-			continue
-		}
-		if sp.Domain == cfg.Edge.DashboardDomain {
-			return nil, fmt.Errorf("app %s uses the dashboard domain %s", sp.Name, sp.Domain)
-		}
-		routes = append(routes, edge.Route{Host: sp.Domain, App: sp.Name, Port: sp.Port})
-	}
-	m.SetRoutes(routes)
-	go func() { errc <- m.Serve(ctx) }()
-	m.Run(ctx)
 	return m, nil
 }
 

@@ -45,7 +45,7 @@ This is the long-term technical reference for maintaining dootd. The rules apps 
 | Compression | `github.com/klauspost/compress/zstd` | Fast, good compression ratio |
 | Zig tarballs (`.tar.xz`) | `github.com/ulikunitz/xz` | Pure Go |
 | Config parsing | `github.com/BurntSushi/toml` | For `dootd.toml` |
-| Dashboard UI | `html/template` + **htmx** (vendored) + server-rendered SVG charts, all embedded with `go:embed` | No Node or JS build step, very light |
+| Dashboard UI | `html/template` + one CSS file + ~100 lines of plain JS (SSE, refresh), server-rendered SVG charts later, all embedded with `go:embed` | No Node or JS build step, very light |
 
 Dependency rule: add new modules only when the stdlib would require more than about 300 lines of risky code instead.
 
@@ -54,7 +54,7 @@ Dependency rule: add new modules only when the stdlib would require more than ab
 ```
                     ┌──────────────────────────── dootd (one process, systemd unit) ───────────────────────────┐
  Cloudflare ─:443─► │ Edge: CF-IP filter → TLS (Origin CA cert, AOP mTLS) → Host router                        │
-                    │        ├─ dashboard host ─► Web UI (auth, htmx)                                           │
+                    │        ├─ dashboard host ─► Web UI (auth, SSE)                                            │
                     │        └─ app host ───────► ReverseProxy ─► 127.0.0.1:$PORT ─────────► app process        │
                     │                                                                          (own uid,       │
                     │ Deployer ─► Builder ─► Toolchain mgr (zig versions)                       own cgroup)     │
@@ -78,6 +78,8 @@ internal/
   secrets/            master key, AES-GCM seal/open
   auth/               argon2id, sessions, CSRF, login rate-limit
   web/                dashboard handlers, templates, static (embedded)
+  apps/               app registry: stored apps + env vars, create/update/delete
+  hostinfo/           host summary from /proc and statfs
   edge/               listener, CF IP filter, certificates, AOP CA, TLS config, host router, proxy, request stats, Cloudflare sync
   cloudflare/         minimal REST client (zones, DNS, origin CA, AOP, settings, IPs)
   github/             PAT validation, repo/branch listing, clone via go-git
@@ -127,10 +129,10 @@ The last **3 releases** are kept for instant rollback. Older ones are deleted af
 | Table | Key columns |
 |---|---|
 | `settings` | key, value (plain or encrypted blob). Holds dashboard domain, GitHub PAT*, CF token*, S3 endpoint/bucket/keys*, backup schedule |
-| `users` | id, email, password_hash (exactly one row) |
-| `sessions` | id_hash, user_id, created_at, expires_at, last_seen |
-| `apps` | id, name, type, repo, branch, domain, port, uid, mem_max, cpu_max, pids_max, build_mem_max, build_timeout, desired_state (running/stopped), current_release |
-| `app_env` | app_id, name, value* |
+| `users` | id (always 1), email, password_hash (argon2id) |
+| `sessions` | id_hash (SHA-256 of the token), csrf, created_at, last_seen, ip, user_agent |
+| `apps` | name, type, repo, branch, path, domain (unique), port (unique), memory_max, cpu_max, pids_max, build_memory, build_timeout, created_at |
+| `app_env` | app, name, value* |
 | `deployments` | id, app, kind (deploy/rollback), status (queued/building/deploying/succeeded/failed), release_id, git_sha, error, created/started/finished_at |
 | `releases` | app, id, git_sha, subject, branch, subdir, zig_version, run (JSON argv), health_path, created_at (only kept releases) |
 | `app_state` | app, desired_state (running/stopped) |
@@ -360,18 +362,29 @@ The last 2 `.pre-restore` folders are kept.
 
 - Sampled every **10 s** into an in-memory ring buffer covering the last hour, which feeds the "live" charts.
 - Rolled up to **1-minute** rows in `metrics_1m` and kept for **7 days**. The rollups are pruned hourly.
-- Charts are rendered on the server as SVG, and htmx refreshes them. No JS chart library is used.
+- Charts are rendered on the server as SVG and refreshed by the dashboard script. No JS chart library is used.
 - The dashboard shows warnings (in the UI only for v1): disk > 85 %, memory > 90 %, app crashed, backup failed, certificate expiring.
 
 ## 14. Dashboard and security
 
-- Available only on the dashboard domain, behind the same Cloudflare-only edge.
-- **Auth**: one user with email and password (argon2id: m=64 MB, t=3, p=1). Login is rate-limited to 5 attempts per 15 min per IP (the CF-Connecting-IP), with a global backoff on top.
-- **Sessions**: 32-byte random ID, and only its SHA-256 is stored. Cookie `__Host-dootd` with `Secure; HttpOnly; SameSite=Strict`. Sessions expire after 7 days idle or 30 days total.
-- **CSRF**: a per-session token on every POST, and the `Origin` header is checked.
-- Headers: strict CSP (`default-src 'self'`), `X-Frame-Options: DENY`, `Referrer-Policy: same-origin`.
-- **Secrets**: saved secrets are never shown in the UI in full. They can only be replaced.
-- Main pages: Home (host metrics, app cards) · App (overview, deploys, logs, env, backups, metrics, settings) · Add app · Settings (GitHub, Cloudflare, S3, backups, toolchains, recovery kit, update).
+- Served only on `edge.dashboard_domain`, through the same Cloudflare-only, AOP-protected edge. Without a dashboard domain (or with the edge off) there is no dashboard; `dootd ctl` still works over SSH.
+- **UI**: server-rendered `html/template` pages and one CSS file, plus ~100 lines of plain JavaScript (`internal/web/static/app.js`) for live logs (Server-Sent Events), refreshing status sections every 5 s and confirmation prompts. Everything embedded with `go:embed`; every action is a normal form POST followed by a redirect, so the dashboard also works without JavaScript (except the live parts).
+- **Admin account**: exactly one user (`users` row id 1). It is created or reset over SSH with `sudo dootd ctl admin set-password --email you@example.com` (alias: `sudo dootd reset-password`); this revokes all sessions (Req 2.6). `dootd init` (Phase 7) will call the same thing.
+- **Passwords**: argon2id (64 MiB, t=3, p=1), at least 12 characters. At most 2 hashes run at the same time so a burst of logins can't exhaust a 1 GB VPS. Unknown emails are checked against a dummy hash so timing doesn't reveal the email.
+- **Rate limiting** (in memory): 5 failed sign-ins per client IP (`CF-Connecting-IP`) per 15 minutes → 429. Above 50 failures in 15 minutes overall, sign-ins are additionally limited to one attempt per 2 s, which slows a distributed attack without locking the owner out.
+- **Sessions**: 32-byte random token in the cookie `__Host-dootd` (`Secure; HttpOnly; SameSite=Strict; Path=/`); only its SHA-256 is stored (`sessions`). Expiry: 7 days idle, 30 days total. The account page lists sessions and can sign out all others; a password change does that automatically.
+- **CSRF**: every POST needs `Origin` (or, failing that, `Referer`) equal to `https://<dashboard domain>`, and signed-in POSTs also need the session's CSRF token in the `csrf` form field.
+- **Headers**: `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`, HSTS, `Cache-Control: no-store` on pages. Request bodies are capped at 256 KB.
+- **Messages** after an action use a short-lived `__Host-dootd-flash` cookie (60 s).
+- **Secrets**: tokens and env var values are never shown again after saving; env vars are listed by name only.
+- **Pages**: Apps (host summary, warnings, app table) · App (status and actions, releases with rollback, deployments, env vars, settings, delete) · Add app · Deployment (live build log) · Logs (live app log) · Settings (GitHub, Cloudflare, domains, zones with "Set Full (strict)", Zig toolchains) · Account (password, sessions).
+
+### 14.1 Apps in the database
+- `apps` holds the configuration, `app_env` the sealed env vars (`app_env:<app>:<NAME>` as associated data). `internal/apps.Service` validates input (every problem reported at once), stores it and wires it into the deployer, supervisor and edge router at runtime; at startup it loads every stored app.
+- Ports are assigned once, from 20001 upwards, and never change.
+- Editing settings or env vars updates the stored config immediately; the running process keeps its old settings until a restart or deploy, and the dashboard says "restart needed" until then. Domain changes re-route immediately and clean up the old hostname.
+- **Delete** (type the name to confirm): unregister (refused while a deployment is running) → stop → remove the cgroups → delete rows, releases, logs, caches and build folders → delete the DNS records that point at this server and revoke the Origin CA certificate → `userdel`. With "keep data" (default) `DATA_DIR` is moved to `/var/lib/dootd/deleted/<app>-<unix time>/data`, owned by root.
+- `--dev-apps` still exists for the end-to-end tests of phases 1–3 (prebuilt apps); it is not needed on a real server.
 
 ## 15. Self-update
 
@@ -402,7 +415,7 @@ The last 2 `.pre-restore` folders are kept.
 | D6 | Zone AOP with own CA + IP filter | IP filter alone allows any Cloudflare customer through |
 | D7 | Snapshot backups every 3 h (not continuous replication) | RPO 3 h accepted; much simpler than a Litestream-style design |
 | D8 | Pinned Zig per app, also used as C compiler | Reproducible builds, a single toolchain |
-| D9 | htmx + server-rendered SVG | No frontend build pipeline |
+| D9 | Server-rendered HTML + a small vanilla script (no htmx) + server-rendered SVG | No frontend build pipeline and no vendored library; a strict CSP (`script-src 'self'`) is easy |
 | D10 | Kill cgroups by PID, not `cgroup.kill` | `cgroup.kill` makes later `CLONE_INTO_CGROUP` children die instantly on current Ubuntu kernels |
 | D11 | No `memory.high`, swap and zswap off for apps | Predictable OOM + restart instead of an app stalled near its limit |
 | D12 | E2E scripts run on GitHub-hosted Ubuntu 24.04 VMs | Real systemd + full cgroup v2; catches kernel behaviour unit tests cannot |
@@ -412,3 +425,6 @@ The last 2 `.pre-restore` folders are kept.
 | D16 | Enforce AOP per zone, only after Cloudflare reports it active; persist the state | Never break a site during setup; never fail open after a restart |
 | D17 | Host must equal SNI (421 otherwise) | Stops cross-zone requests from bypassing a zone's AOP |
 | D18 | Edge sync is best effort and per host | One misconfigured domain does not block certificates or DNS for the others |
+| D19 | The admin is created over SSH (`dootd ctl admin set-password`), never through a web setup page | A public first-run page could be claimed by whoever reaches it first |
+| D20 | Config changes apply on restart/deploy, never silently to a running app | Predictable; the dashboard shows "restart needed" |
+| D21 | Deleting an app keeps its data by default (moved aside) | Deletion is one click; losing a database should not be |

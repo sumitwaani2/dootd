@@ -169,3 +169,31 @@ func (s *Supervisor) StopAll(ctx context.Context) error {
 	wg.Wait()
 	return errors.Join(errs...)
 }
+
+// Remove stops an app, shuts its actor down, removes its cgroup and
+// forgets it. Its user and files are left to the caller.
+func (s *Supervisor) Remove(ctx context.Context, name string) error {
+	s.mu.Lock()
+	a := s.apps[name]
+	s.mu.Unlock()
+	if a == nil {
+		return nil
+	}
+	if err := a.Stop(ctx); err != nil {
+		return fmt.Errorf("stop %s: %w", name, err)
+	}
+	a.close()
+	s.mu.Lock()
+	delete(s.apps, name)
+	for i, n := range s.order {
+		if n == name {
+			s.order = append(s.order[:i], s.order[i+1:]...)
+			break
+		}
+	}
+	s.mu.Unlock()
+	if err := a.group.Remove(); err != nil {
+		s.deps.Log.Warn("removing app cgroup", "app", name, "err", err)
+	}
+	return nil
+}

@@ -219,6 +219,16 @@ func cfmock(args []string) {
 			ok(w, d)
 		}
 	}))
+	mux.HandleFunc("DELETE "+p+"/zones/{zone}/dns_records/{id}", auth(func(w http.ResponseWriter, r *http.Request) {
+		if z := zone(w, r); z != nil {
+			if z.DNS[r.PathValue("id")] == nil {
+				fail(w, http.StatusNotFound, "record not found")
+				return
+			}
+			delete(z.DNS, r.PathValue("id"))
+			ok(w, map[string]string{"id": r.PathValue("id")})
+		}
+	}))
 	mux.HandleFunc("GET "+p+"/zones/{zone}/settings/ssl", auth(func(w http.ResponseWriter, r *http.Request) {
 		if z := zone(w, r); z != nil {
 			ok(w, map[string]string{"id": "ssl", "value": z.SSL})

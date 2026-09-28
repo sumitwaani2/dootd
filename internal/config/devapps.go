@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -138,7 +137,7 @@ func LoadDevApps(path string) ([]LoadedApp, error) {
 			if err := github.ValidateBranch(la.Branch); err != nil {
 				fail("%v", err)
 			}
-			if la.Subdir, err = cleanSubdir(d.Path); err != nil {
+			if la.Subdir, err = app.CleanSubdir(d.Path); err != nil {
 				fail("path: %v", err)
 			}
 			if d.BuildMemory != "" {
@@ -192,19 +191,4 @@ func LoadDevApps(path string) ([]LoadedApp, error) {
 		return nil, fmt.Errorf("dev apps: %s:\n%w", path, err)
 	}
 	return out, nil
-}
-
-func cleanSubdir(p string) (string, error) {
-	p = strings.Trim(strings.TrimSpace(p), "/")
-	if p == "" {
-		return "", nil
-	}
-	c := filepath.Clean(p)
-	if c == ".." || strings.HasPrefix(c, "../") || strings.HasPrefix(c, ".git") {
-		return "", fmt.Errorf("%q must be a directory inside the repository", p)
-	}
-	if c == "." {
-		return "", nil
-	}
-	return c, nil
 }

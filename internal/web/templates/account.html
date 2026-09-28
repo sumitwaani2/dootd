@@ -1,0 +1,25 @@
+{{define "content"}}
+{{$csrf := .CSRF}}
+<section class="card">
+  <h1>Account</h1>
+  <p>Signed in as <b>{{.Admin}}</b>. To change the email or reset a forgotten password, run <code>sudo dootd ctl admin set-password --email …</code> over SSH.</p>
+  <h2>Change password</h2>
+  <form method="post" action="/account/password" class="grid">
+    {{template "csrf" $csrf}}
+    <label>Current password <input type="password" name="current" autocomplete="current-password" required></label>
+    <label>New password <input type="password" name="new" autocomplete="new-password" minlength="12" required></label>
+    <label>Repeat new password <input type="password" name="confirm" autocomplete="new-password" minlength="12" required></label>
+    <div class="wide"><button>Change password</button> <small class="muted">Signs out every other session.</small></div>
+  </form>
+</section>
+<section class="card">
+  <h2>Sessions</h2>
+  <table>
+    <thead><tr><th>Signed in</th><th>Last seen</th><th>IP</th><th>Browser</th></tr></thead>
+    <tbody>{{range .Data.Sessions}}
+      <tr><td>{{datetime .CreatedAt}}{{if .Current}} <span class="badge s-running">this session</span>{{end}}</td><td>{{ago .LastSeen}}</td><td>{{.IP}}</td><td class="clip">{{.UserAgent}}</td></tr>
+    {{end}}</tbody>
+  </table>
+  <form method="post" action="/account/revoke-others" class="inline">{{template "csrf" $csrf}}<button>Sign out all other sessions</button></form>
+</section>
+{{end}}

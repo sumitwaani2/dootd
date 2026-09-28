@@ -1,6 +1,6 @@
 # Using dootd with your Cloudflare account
 
-This covers the Phase 3 setup on a VPS. Once `dootd init` exists (Phase 7), it will run these steps for you.
+This is the one-time SSH setup on a VPS. After it, everything happens in the dashboard. Once `dootd init` exists (Phase 7), it will run these steps for you.
 
 ## 1. Create an API token
 
@@ -25,17 +25,25 @@ dashboard_domain = "dootd.example.com"
 # public_ipv4 / public_ipv6 are detected automatically; set them if detection fails.
 ```
 
-In `/etc/dootd/dev-apps.toml`, give each app a `domain = "blog.example.com"`. Then:
+Then:
 
 ```bash
 sudo systemctl restart dootd
 printf '%s' 'YOUR_TOKEN' | sudo dootd ctl cloudflare-token   # verifies it and stores it encrypted
-sudo dootd ctl edge sync                                      # DNS + certificates + AOP
-sudo dootd ctl edge                                           # status and warnings
-sudo dootd ctl edge set-strict example.com                    # if it warns about the SSL mode
+sudo dootd ctl edge sync                                      # DNS + certificate for the dashboard + AOP
+sudo dootd ctl admin set-password --email you@example.com     # dashboard login (asks for the password)
 ```
 
 The first sync for each zone waits until Cloudflare reports the AOP certificate as active, usually under a minute. Only then does dootd start requiring it.
+
+Now open `https://dootd.example.com`, sign in, and:
+
+1. **Settings → GitHub**: paste a fine-grained token with *Contents: Read-only* on your repos.
+2. **Settings → Zones**: press **Set Full (strict)** if it's offered.
+3. **Apps → Add app**: repo, branch, type, domain (e.g. `blog.example.com`). dootd creates the DNS record and certificate in the background.
+4. Add env vars if needed, then press **Deploy** and watch the build log.
+
+Over SSH, `sudo dootd ctl edge` shows the same status, and `sudo dootd reset-password` resets a forgotten password.
 
 ## 3. In the Cloudflare dashboard
 

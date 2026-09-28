@@ -1,0 +1,74 @@
+{{define "content"}}
+{{$csrf := .CSRF}}
+<section class="card">
+  <h1>Settings</h1>
+  <h2>GitHub</h2>
+  {{if .Data.GitHubSet}}
+  <p>A token is set{{with .Data.GitHubLogin}} for <b>{{.}}</b>{{end}}. It is stored encrypted and only sent to github.com.</p>
+  {{else}}
+  <p class="muted">No token: only public repositories can be deployed.</p>
+  {{end}}
+  <form method="post" action="/settings/github-token" class="grid">
+    {{template "csrf" $csrf}}
+    <label class="wide">{{if .Data.GitHubSet}}Replace token{{else}}Personal access token{{end}}
+      <input type="password" name="token" autocomplete="off" placeholder="github_pat_…">
+      <small>Fine-grained token with <b>Contents: Read-only</b> on the repositories you deploy.</small></label>
+    <div class="wide"><button>Save token</button>
+    {{if .Data.GitHubSet}}<button name="remove" value="1" class="link" data-confirm-click="Remove the GitHub token?">remove token</button>{{end}}</div>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Cloudflare</h2>
+  {{with .Data.Edge}}
+  <p>{{if .TokenSet}}A token is set (stored encrypted).{{else}}<span class="warn-text">No token yet: DNS records and certificates cannot be managed.</span>{{end}}
+     Public IP {{if .PublicIPv4}}{{.PublicIPv4}}{{else}}not detected yet{{end}}{{if and .PublicIPv6 (ne .PublicIPv6 "off")}} / {{.PublicIPv6}}{{end}}.
+     Cloudflare IP ranges: {{.IPRanges}} ({{.IPSource}}). Rejected connections: {{.Rejected}}.
+     Last sync: {{ago .LastSync}}.</p>
+  <form method="post" action="/settings/cloudflare-token" class="grid">
+    {{template "csrf" $csrf}}
+    <label class="wide">{{if .TokenSet}}Replace API token{{else}}API token{{end}}
+      <input type="password" name="token" autocomplete="off" required>
+      <small>Permissions: Zone Read, DNS Edit, SSL and Certificates Edit, Zone Settings Edit. See docs/cloudflare-setup.md.</small></label>
+    <div class="wide"><button>Verify and save</button></div>
+  </form>
+  <form method="post" action="/settings/edge-sync" class="inline">{{template "csrf" $csrf}}<button>Sync DNS, certificates and AOP now</button></form>
+  {{with .LastError}}<p class="error pre">{{.}}</p>{{end}}
+
+  <h3>Domains</h3>
+  <table>
+    <thead><tr><th>Domain</th><th>App</th><th>Zone</th><th>DNS</th><th>Certificate until</th><th>Problem</th></tr></thead>
+    <tbody>{{range .Hosts}}
+      <tr><td>{{.Host}}</td><td>{{if .App}}<a href="/apps/{{.App}}">{{.App}}</a>{{else}}dashboard{{end}}</td><td>{{.Zone}}</td><td>{{.DNS}}</td><td>{{date .CertUntil}}</td><td class="error-text">{{.Error}}</td></tr>
+    {{end}}</tbody>
+  </table>
+  {{if .Zones}}
+  <h3>Zones</h3>
+  <table>
+    <thead><tr><th>Zone</th><th>SSL/TLS mode</th><th>Origin pulls (AOP)</th><th></th></tr></thead>
+    <tbody>{{range .Zones}}
+      <tr><td>{{.Name}}</td><td>{{.SSLMode}}</td><td>{{.AOP}}</td>
+      <td>{{if and .SSLMode (ne .SSLMode "strict")}}<form method="post" action="/settings/ssl-strict" class="inline" data-confirm="Set {{.Name}} to Full (strict)? This affects every site in the zone.">{{template "csrf" $csrf}}<input type="hidden" name="zone" value="{{.Name}}"><button>Set Full (strict)</button></form>{{end}}
+      {{with .Error}}<span class="error-text">{{.}}</span>{{end}}</td></tr>
+    {{end}}</tbody>
+  </table>
+  {{end}}
+  {{else}}
+  <p class="muted">The edge is disabled in /etc/dootd/config.toml.</p>
+  {{end}}
+</section>
+
+<section class="card">
+  <h2>Zig toolchains</h2>
+  <p class="muted">Downloaded when a deploy needs them. Deleting one only means the next build that pins it downloads it again.</p>
+  {{if .Data.Toolchains}}
+  <table>
+    <thead><tr><th>Version</th><th>Size</th><th>Current releases built with it</th><th></th></tr></thead>
+    <tbody>{{range .Data.Toolchains}}
+      <tr><td>{{.Version}}</td><td>{{bytes .Bytes}}</td><td>{{range .UsedBy}}<a href="/apps/{{.}}">{{.}}</a> {{else}}<span class="muted">none</span>{{end}}</td>
+      <td><form method="post" action="/settings/toolchains/delete" class="inline" data-confirm="Delete Zig {{.Version}}?">{{template "csrf" $csrf}}<input type="hidden" name="version" value="{{.Version}}"><button class="link">delete</button></form></td></tr>
+    {{end}}</tbody>
+  </table>
+  {{else}}<p class="muted">None yet.</p>{{end}}
+</section>
+{{end}}

@@ -151,7 +151,7 @@ check "X-Forwarded-Proto is https" test "$(json_field echo.example.test "['heade
 spoof() { [ "$(cf echo.example.test / -H 'X-Forwarded-For: 6.6.6.6' | python3 -c "import json,sys; print(json.load(sys.stdin)['headers']['X-Forwarded-For'])")" = 203.0.113.7 ]; }
 check "a spoofed X-Forwarded-For is replaced" spoof
 check "second zone app answers" is_code 200 app.other.test /
-check "dashboard placeholder" body_has dootd.example.test / "dootd is running"
+check "dashboard answers (sign-in page)" body_has dootd.example.test /login "Sign in"
 stream_ok() { [ "$(cf app.other.test /stream | grep -c tick)" = 3 ]; }
 check "streaming response passes through" stream_ok
 check "WebSocket-style upgrade works" "$E2E/echo/echo-app" upgrade -addr "$CF_IP:443" -host echo.example.test \

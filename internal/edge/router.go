@@ -93,7 +93,7 @@ func (rt *Router) newProxy(r Route) *appProxy {
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
 			pr.Out.Host = pr.In.Host // apps see their own domain
-			ip := clientIP(pr.In)
+			ip := ClientIP(pr.In)
 			pr.Out.Header.Set("X-Forwarded-For", ip)
 			pr.Out.Header.Set("X-Real-IP", ip)
 			pr.Out.Header.Set("X-Forwarded-Proto", "https")
@@ -112,9 +112,9 @@ func (rt *Router) newProxy(r Route) *appProxy {
 	return &appProxy{route: r, proxy: p, stats: &Stats{}}
 }
 
-// clientIP is the visitor's IP: CF-Connecting-IP (only Cloudflare can
+// ClientIP is the visitor's IP: CF-Connecting-IP (only Cloudflare can
 // connect, so it is trustworthy), else the TCP peer.
-func clientIP(r *http.Request) string {
+func ClientIP(r *http.Request) string {
 	if v := r.Header.Get("CF-Connecting-IP"); v != "" {
 		if a, err := netip.ParseAddr(v); err == nil {
 			return a.String()

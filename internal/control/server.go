@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sumitwaani2/dootd/internal/auth"
 	"github.com/sumitwaani2/dootd/internal/deployer"
 	"github.com/sumitwaani2/dootd/internal/edge"
 	"github.com/sumitwaani2/dootd/internal/github"
@@ -34,6 +35,7 @@ type Server struct {
 	Sup    *supervisor.Supervisor
 	Dep    *deployer.Deployer
 	Edge   *edge.Manager // nil when the edge is disabled
+	Auth   *auth.Auth
 	Layout layout.Layout
 	Log    *slog.Logger
 }
@@ -88,6 +90,7 @@ func (s *Server) Serve(ctx context.Context, path string) error {
 	mux.HandleFunc("GET /v1/deployments/{id}/log", s.deploymentLog)
 	mux.HandleFunc("PUT /v1/settings/github-token", s.githubToken)
 	mux.HandleFunc("PUT /v1/settings/cloudflare-token", s.cloudflareToken)
+	mux.HandleFunc("PUT /v1/admin", s.setAdmin)
 	mux.HandleFunc("GET /v1/edge", s.edgeStatus)
 	mux.HandleFunc("POST /v1/edge/sync", s.edgeSync)
 	mux.HandleFunc("POST /v1/edge/zones/{zone}/ssl-strict", s.edgeStrict)
@@ -189,24 +192,16 @@ func (s *Server) action(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := a.Spec().Name
-	if id := s.Dep.Pending(name); id != 0 {
-		writeErr(w, http.StatusConflict, fmt.Errorf("deployment #%d of %s is in progress", id, name))
-		return
-	}
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 	defer cancel()
 	var err error
 	switch act := r.PathValue("action"); act {
 	case "start":
-		if err = a.Start(ctx); err == nil || !errors.Is(err, supervisor.ErrNoRelease) {
-			s.Dep.SetDesired(ctx, name, true)
-		}
+		err = s.Dep.Start(ctx, name)
 	case "stop":
-		s.Dep.SetDesired(ctx, name, false)
-		err = a.Stop(ctx)
+		err = s.Dep.StopApp(ctx, name)
 	case "restart":
-		s.Dep.SetDesired(ctx, name, true)
-		err = a.Restart(ctx)
+		err = s.Dep.Restart(ctx, name)
 	default:
 		writeErr(w, http.StatusNotFound, fmt.Errorf("unknown action %q (start, stop, restart, deploy, rollback)", act))
 		return
@@ -434,4 +429,29 @@ func (s *Server) edgeStrict(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"result": "SSL/TLS mode set to Full (strict)"})
+}
+
+func (s *Server) setAdmin(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 8192)).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if body.Email == "" {
+		cur, err := s.Auth.Admin(r.Context())
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, errors.New("no admin yet: pass --email"))
+			return
+		}
+		body.Email = cur
+	}
+	if err := s.Auth.SetAdmin(r.Context(), body.Email, body.Password); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	s.Log.Info("dashboard admin credentials set over the control socket; all sessions revoked")
+	writeJSON(w, http.StatusOK, map[string]string{"result": "admin " + strings.ToLower(strings.TrimSpace(body.Email)) + " saved; all dashboard sessions were signed out"})
 }
