@@ -254,8 +254,17 @@ func (c *Collector) write(ctx context.Context, minute time.Time, bySc map[string
 	defer tx.Rollback()
 	for scope, ss := range bySc {
 		p := rollup(ss)
-		if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO metrics_1m (scope, ts, cpu, mem, mem_limit, swap, load1, disk_used,
-			disk_total, pids, io_read, io_write, req, req_5xx, p50, p95, oom) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		// A minute can be written twice when dootd restarts inside it:
+		// merge instead of replacing, so no requests are lost.
+		if _, err := tx.ExecContext(ctx, `INSERT INTO metrics_1m (scope, ts, cpu, mem, mem_limit, swap, load1, disk_used,
+			disk_total, pids, io_read, io_write, req, req_5xx, p50, p95, oom) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			ON CONFLICT (scope, ts) DO UPDATE SET cpu = (cpu + excluded.cpu) / 2, mem = max(mem, excluded.mem),
+			mem_limit = excluded.mem_limit, swap = max(swap, excluded.swap), load1 = (load1 + excluded.load1) / 2,
+			disk_used = excluded.disk_used, disk_total = excluded.disk_total, pids = max(pids, excluded.pids),
+			io_read = (io_read + excluded.io_read) / 2, io_write = (io_write + excluded.io_write) / 2,
+			req = req + excluded.req, req_5xx = req_5xx + excluded.req_5xx,
+			p50 = coalesce((p50 + excluded.p50) / 2, p50, excluded.p50), p95 = max(coalesce(p95, excluded.p95), coalesce(excluded.p95, p95)),
+			oom = oom + excluded.oom`,
 			scope, minute.Unix(), p.CPU, p.Mem, p.MemLimit, p.Swap, p.Load, p.DiskUsed, p.DiskTotal, p.Pids,
 			p.IORead, p.IOWrite, p.Req, p.Req5xx, nullable(p.P50), nullable(p.P95), p.OOM); err != nil {
 			c.Log.Warn("metrics rollup", "err", err)
@@ -294,8 +303,10 @@ func rollup(ss []rawSample) Point {
 	}
 	if secs > 0 {
 		p.CPU, p.IORead, p.IOWrite, p.Load = p.CPU/secs, p.IORead/secs, p.IOWrite/secs, p.Load/secs
-		p.Req, p.Req5xx = float64(req)*60/secs, float64(r5xx)*60/secs
 	}
+	// Requests seen in this minute (= requests/min for a full minute; a
+	// minute split by a restart is completed by the merge on write).
+	p.Req, p.Req5xx = float64(req), float64(r5xx)
 	p.P50, p.P95 = percentile(buckets, 0.50), percentile(buckets, 0.95)
 	return p
 }
