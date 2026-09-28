@@ -656,8 +656,11 @@ func (m *Manager) SetStrict(ctx context.Context, zoneName string) error {
 		return err
 	}
 	m.log.Info("zone SSL/TLS mode set to Full (strict)", "zone", z.Name)
-	_, err = m.Sync(ctx)
-	return err
+	// Refresh the status; errors about other hosts are not this call's failure.
+	if _, err := m.Sync(ctx); err != nil {
+		m.log.Warn("sync after set-strict reported errors", "err", err)
+	}
+	return nil
 }
 
 func (m *Manager) publicIPs(ctx context.Context) (string, string, error) {
