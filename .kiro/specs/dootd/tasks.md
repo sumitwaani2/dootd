@@ -158,7 +158,7 @@ Tasks are grouped by the phases in `docs/implementation-plan.md`. Each phase end
 
 ## Phase 7: Install, simplify, v1.0
 
-Tasks 46–47 built a CLI bootstrap (`dootd init`, `init --restore`, recovery kit) and self-update. They went beyond the goal (one SSH command, everything else in the dashboard, one way to do each thing) and were removed again by tasks 51–57 (decisions D33–D36).
+Tasks 46–47 built a CLI bootstrap (`dootd init`, `init --restore`, recovery kit) and self-update. They went beyond the goal (one SSH command, everything else in the dashboard, one way to do each thing) and were removed again by tasks 51–58 (decisions D33–D37).
 
 - [x] 45. Full `install.sh` (directories, master key, systemd unit with `Delegate=yes`, `make`, swapfile); the unit is embedded in the binary and installed by `dootd setup-host` (D28)
   - _Requirements: 2.3_
@@ -166,20 +166,21 @@ Tasks 46–47 built a CLI bootstrap (`dootd init`, `init --restore`, recovery ki
 - [x] 47. ~~Self-update with `dootd.prev` start guard~~ (removed in task 51)
 - [x] 48. Hardening: fuzzing (toml, tar/xz, backup archives), `-race`, fd limits, restart timing
   - Fuzzing found and fixed a tar.xz extraction escape through chained symlinks
-- [ ] 51. Remove the CLI surface and extras: `dootd ctl` + control socket, `init`, `reset-password`, `update`/`update-guard` + `internal/selfupdate`, `--dev-apps`, `/etc/dootd/config.toml`, recovery kit, dootd.db self-backup, app path (monorepo subfolder)
+- [x] 51. Remove the CLI surface and extras: `dootd ctl` + control socket, `init`, `reset-password`, `update`/`update-guard` + `internal/selfupdate`, `--dev-apps`, `/etc/dootd/config.toml`, recovery kit, dootd.db self-backup, app path (monorepo subfolder)
   - _Requirements: 1.2, 15.6, 18.1_
-- [ ] 52. One-time password: `setup-host` creates it and the installer prints it; sign-in with it only allows setting the admin email and password; 24 h expiry; consumed on use
+- [x] 52. One-time password: `setup-host` creates it and the installer prints it; sign-in with it only allows setting the admin email and password; 24 h expiry; consumed on use
   - _Requirements: 2.3–2.6_
-- [ ] 53. Setup address: non-Cloudflare connections allowed only while setup is open, self-signed certificate, dashboard only, TCP peer as client IP; closes when the dashboard domain is ready and no one-time password is pending
+- [x] 53. Setup address: non-Cloudflare connections allowed only while setup is open, self-signed certificate, dashboard only, TCP peer as client IP; closes when the dashboard domain is ready and no one-time password is pending
   - _Requirements: 3.1–3.5, 12.2_
-- [ ] 54. Dashboard settings for everything that was CLI or config: dashboard domain (with progress and old-domain cleanup), admin email change; public IPs always detected; fixed backup schedule and warning thresholds
+- [x] 54. Dashboard settings for everything that was CLI or config: dashboard domain (with progress and old-domain cleanup), admin email change; public IPs always detected; fixed backup schedule and warning thresholds
   - _Requirements: 6.7, 7.1–7.5, 15.1, 17.4_
-- [ ] 55. App name derived from the repo name; `dootd.toml` always at the repo root
+- [x] 55. App name derived from the repo name; `dootd.toml` always at the repo root
   - _Requirements: 8.1, 8.2_
-- [ ] 56. Bucket layout `<app>/`; Add app lists the bucket's folders (preselecting the app's name) and restores the chosen folder's newest backup before the first deploy
+- [x] 56. Bucket layout `<app>/`; Add app lists the bucket's folders (preselecting the app's name) and restores the chosen folder's newest backup before the first deploy
   - _Requirements: 8.4, 15.3, 16.1_
-- [ ] 57. Installer without questions: stop, replace, `setup-host`, start, print the address and the one-time password; re-running it is the update and recovery path
+- [x] 57. Installer without questions: stop, replace, `setup-host`, start, print the address and the one-time password; re-running it is the update and recovery path
   - _Requirements: 2.1–2.6, 18_
-- [ ] 58. E2E scripts drive only the installer and the dashboard (shared helpers); test-only `DOOTD_TEST_*` variables for the fake Cloudflare API, public IPs and a short backup schedule
+- [x] 58. E2E scripts drive only the installer and the dashboard (shared helpers); test-only `DOOTD_TEST_*` variables for the fake Cloudflare API, public IPs and a short backup schedule
+  - Automated: `scripts/e2e/lib.sh` + phases 1–7 (459 checks): install, one-time password, setup address, dashboard domain moves, bucket folders and restore on Add app, update and recovery by re-running install.sh, a new server from scratch; 28 MB idle RSS with 5 apps, restart of 6 apps in 1.4 s
 - [ ] 49. 7-day soak test with 5 apps on a 1 GB VPS, plus a run against real Cloudflare and R2
 - [ ] 50. Tag `v1.0.0`

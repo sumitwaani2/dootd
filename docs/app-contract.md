@@ -61,7 +61,7 @@ The app type (`zig` or `c`) is chosen in the dashboard. It only changes the defa
 - `CC="zig cc"` and `CXX="zig c++"` are set, so plain Makefiles compile with Zig's toolchain.
 - `make` is available on the host. **No other system libraries are installed.** If you need something like sqlite, add it as source (for example the sqlite amalgamation `sqlite3.c`) or as a Zig package dependency in `build.zig.zon`.
 - Outbound network is allowed during the build, so `zig build` can fetch dependencies from `build.zig.zon`.
-- Default build limits are **1 GB RAM** and a **15 minute** timeout. Both can be changed per app in the dashboard.
+- Default build limits are **1 GB RAM** and a **15 minute** timeout. Both can be changed per app in the dashboard. Builds get no swap. Compiling the sqlite amalgamation with `ReleaseSafe` (as `examples/sample-zig` does) needs about 2 GB, so raise *Build memory* for such apps.
 - Your env vars are **also available during the build**.
 - The build runs as the app's own user (`dootd-<app>`). `HOME`, `TMPDIR`, `ZIG_GLOBAL_CACHE_DIR` and `ZIG_LOCAL_CACHE_DIR` point to a per-app cache that survives between deploys, so rebuilds (including `zig cc` C compiles and `build.zig.zon` packages) are fast. `DOOTD_BUILD=1` is set.
 - The checkout is shallow (depth 1) and `.git` is removed, so the build can't read git history or run `git describe`.

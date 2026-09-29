@@ -110,12 +110,12 @@ The first pass of this phase added a CLI bootstrap (`dootd init`, `init --restor
 
 - [x] `install.sh`: OS, cgroup and architecture checks; download + checksum; `make`; directories; master key; systemd unit (embedded in the binary, `dootd setup-host`).
 - [x] Hardening pass: fuzz the `dootd.toml` parser, the tar extraction and backup archives, `go test -race`, fd limits, restart timing with 5 apps.
-- [ ] Remove `dootd ctl` and the control socket, `dootd init` (+ `--restore`), `reset-password`, self-update, `--dev-apps`, `/etc/dootd/config.toml`, the recovery kit, dootd.db backups and the monorepo app path.
-- [ ] The installer asks nothing: it installs or updates, starts dootd and prints the setup address and a one-time password (24 h, single use). Re-running it is the update and the recovery path.
-- [ ] Setup address `https://<server IP>` with a self-signed certificate, open only until the dashboard domain is ready and no one-time password is pending; dashboard only, never apps.
-- [ ] Dashboard: set up the account from the one-time password, change the admin email, set the dashboard domain, enter the Cloudflare/GitHub tokens and the bucket; the home page lists missing setup steps.
-- [ ] App name = repository name; bucket folder per app; Add app restores a chosen folder's newest backup.
-- [ ] E2E scripts use only the installer and the dashboard.
+- [x] Remove `dootd ctl` and the control socket, `dootd init` (+ `--restore`), `reset-password`, self-update, `--dev-apps`, `/etc/dootd/config.toml`, the recovery kit, dootd.db backups and the monorepo app path.
+- [x] The installer asks nothing: it installs or updates, starts dootd and prints the setup address and a one-time password (24 h, single use). Re-running it is the update and the recovery path.
+- [x] Setup address `https://<server IP>` with a self-signed certificate, open only until the dashboard domain is ready and no one-time password is pending; dashboard only, never apps.
+- [x] Dashboard: set up the account from the one-time password, change the admin email, set the dashboard domain, enter the Cloudflare/GitHub tokens and the bucket; the home page lists missing setup steps.
+- [x] App name = repository name; bucket folder per app; Add app restores a chosen folder's newest backup.
+- [x] E2E scripts use only the installer and the dashboard (`scripts/e2e/phase1.sh` … `phase7.sh`, 459 checks).
 - [ ] Soak test: 5 apps running for 7 days on a 1 GB VPS, with real Cloudflare and R2.
 
 **Done when:** a fresh VPS goes from `curl | sudo bash` to a deployed app in under 10 minutes without touching SSH again, and v1.0.0 is tagged.
