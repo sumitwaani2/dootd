@@ -8,7 +8,7 @@ Contract version: **1**
 
 ## 1. Summary checklist
 
-- [ ] Repo has a `dootd.toml` at the root, with an exact `zig_version`.
+- [ ] Repo has a `dootd.toml` at the root, with an exact `zig_version`. The repo name becomes the app name (e.g. `my_blog` → `my-blog`).
 - [ ] `build` produces a runnable binary, and `run` points to it.
 - [ ] The app serves plain HTTP on **`127.0.0.1:$PORT`**. No TLS.
 - [ ] All SQLite files live in **`$DATA_DIR`**, and nothing else is written anywhere except `$TMPDIR`.
@@ -53,7 +53,7 @@ health_path = "/healthz"
 
 The app type (`zig` or `c`) is chosen in the dashboard. It only changes the default `build` command.
 
-**App root.** By default `dootd.toml` sits at the repo root. For a monorepo you can set an app **path** (for example `apps/blog`) in dootd; then `dootd.toml` lives in that folder, and the build, `run` and the app's working directory are all relative to it. Unknown keys in `dootd.toml` are rejected, so typos fail the deploy instead of being ignored.
+**One repo, one app.** `dootd.toml` sits at the repo root, and the build, `run` and the app's working directory are relative to it. The app's name in dootd (and in `DOOTD_APP`, the Linux user `dootd-<name>` and its backup folder) is the repository name, lowercased, with `_` and `.` turned into `-`; it must then be 2–24 characters of `a–z`, `0–9` and `-`, starting with a letter. Unknown keys in `dootd.toml` are rejected, so typos fail the deploy instead of being ignored.
 
 ### Build environment
 
@@ -77,7 +77,7 @@ The app type (`zig` or `c`) is chosen in the dashboard. It only changes the defa
 | `HOST` | `127.0.0.1` | The address to bind to. Always bind here, never to `0.0.0.0`. |
 | `DATA_DIR` | `/var/lib/dootd/apps/blog/data` | Persistent, backed up, and survives every deploy. |
 | `TMPDIR` | `/var/lib/dootd/apps/blog/tmp` | Scratch space that may be wiped on every deploy. |
-| `DOOTD_APP` | `blog` | The app's name. |
+| `DOOTD_APP` | `blog` | The app's name (from the repository name). |
 | `DOOTD_DOMAIN` | `blog.example.com` | The public domain. |
 | `DOOTD_RELEASE` | `20260927-141500-a1b2c3d` | The deployed release ID (timestamp + git SHA). |
 | `DOOTD_CONTRACT` | `1` | The contract version. |

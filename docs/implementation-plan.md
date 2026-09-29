@@ -13,7 +13,7 @@ This plan builds dootd in phases. Each phase ends with something that works and 
 | 4 | Dashboard | Login + the full click-to-deploy flow in the browser | ✅ |
 | 5 | Backups | Scheduled, pre-deploy and manual backups to S3/R2, plus restore | ✅ |
 | 6 | Monitoring | Host and app metrics, request stats, charts, warnings | ✅ |
-| 7 | Install and self-update → v1.0 | One-line install, `dootd init`, update from the UI, hardening | 🟨 |
+| 7 | Install, simplify → v1.0 | One command over SSH, everything else in the dashboard, hardening | 🟨 |
 
 Phases 1–3 are mostly used through the CLI or a config file, so the risky parts (cgroups, builds, TLS) get proven before any UI work. Phase 4 connects everything to the browser.
 
@@ -53,7 +53,7 @@ Phases 1–3 are mostly used through the CLI or a config file, so the risky part
 - [x] `builder`: run the build as the app user in `builds/<app>` with a memory limit, CPU weight, timeout, PATH/CC/CXX and a persistent zig cache; stream the build log.
 - [x] `deployer`: the full pipeline from architecture §11, including the global build queue, `current` symlink swap, rollback when the health check fails, and pruning to 3 releases.
 - [x] Rollback to any of the kept releases, with no build.
-- [x] `dootd ctl` over a local Unix socket to deploy, roll back and inspect apps (kept as the SSH fallback after Phase 4).
+- [x] `dootd ctl` over a local Unix socket to deploy, roll back and inspect apps (removed in Phase 7).
 
 **Done when:** both sample apps deploy from GitHub with their pinned Zig version. A broken commit leaves the old version serving, and a failing health check rolls back automatically. Automated in `scripts/e2e/phase2.sh` (64 checks, including a private GitHub clone of this repo's PR branch).
 
@@ -77,7 +77,7 @@ Phases 1–3 are mostly used through the CLI or a config file, so the risky part
 - [x] App page: status, **Deploy / Redeploy**, Rollback, Start/Stop/Restart, live build log and live app log (SSE), env var editor (requires a restart), limits, delete app (with a confirm step and an option to keep backups).
 - [x] Deploy history list with status, SHA, duration and error.
 - [x] Zone SSL mode warning with a "Set to Full (strict)" button.
-- [x] Apps live in the database; `--dev-apps` is kept only for the phase 1–3 end-to-end tests, and `dootd ctl` stays as the SSH fallback. `dootd ctl admin set-password` / `dootd reset-password` create or reset the admin.
+- [x] Apps live in the database. (The admin was created over SSH here; Phase 7 replaced that with the installer's one-time password.)
 
 **Done when:** a new app goes from repo URL to live HTTPS entirely in the browser, with no SSH (after the one-time admin setup). Automated in `scripts/e2e/phase4.sh` (83 checks, driving the dashboard with curl through the edge).
 
@@ -104,18 +104,21 @@ Phases 1–3 are mostly used through the CLI or a config file, so the risky part
 
 **Done when:** the charts match `top` and `systemd-cgtop` within a reasonable margin, and dootd's own idle RSS stays under 30 MB with 5 apps running. Automated in `scripts/e2e/phase6.sh` (48 checks): CPU within 3 points of `cpu.stat` for a free and a 0.5-core app, memory equal to `memory.current`, dootd at 28 MB and 0.03 % CPU.
 
-## Phase 7: Install, self-update, v1.0
+## Phase 7: Install, simplify, v1.0
 
-- [x] `install.sh`: OS, cgroup and architecture checks; download + checksum; `make`; directories; master key; systemd unit (embedded in the binary, `dootd setup-host`); optional swapfile; optional ufw.
-- [x] `dootd init` (interactive, or flags + env vars): admin, dashboard domain, CF token with a permission check, IP detection → DNS, certificate and AOP for the dashboard → start the service.
-- [x] `dootd reset-password` (done in Phase 4).
-- [x] `dootd init --restore <recovery kit>`: rebuild a server from the recovery kit and the bucket (dootd.db + app backups), then redeploy.
-- [x] Self-update from the UI (and `dootd ctl update`), with a `.prev` fallback (architecture §15).
-- [x] Hardening pass: fuzz the `dootd.toml` parser and the tar extraction, check how many file descriptors each process can open, run `go test -race`, and time a restart with 5 apps.
-- [ ] Soak test: 5 apps running for 7 days on a 1 GB VPS.
-- [x] Final pass on the docs: README quick start, Cloudflare token setup walkthrough, troubleshooting.
+The first pass of this phase added a CLI bootstrap (`dootd init`, `init --restore`, recovery kit), `dootd ctl`, a config file and self-update. That went against the goal (one SSH command; everything else in the dashboard; one way to do each thing), so the second pass removes it again (architecture D33–D37).
 
-**Done when:** a fresh VPS goes from `curl | sudo bash` to a deployed app in under 10 minutes, and v1.0.0 is tagged. Automated in `scripts/e2e/phase7.sh` (89 checks, fake Cloudflare/GitHub, real S3 server): install → init → app → self-update → rollback → destroy + restore. Still open: the soak test and the real Cloudflare/R2 run need a VPS.
+- [x] `install.sh`: OS, cgroup and architecture checks; download + checksum; `make`; directories; master key; systemd unit (embedded in the binary, `dootd setup-host`).
+- [x] Hardening pass: fuzz the `dootd.toml` parser, the tar extraction and backup archives, `go test -race`, fd limits, restart timing with 5 apps.
+- [ ] Remove `dootd ctl` and the control socket, `dootd init` (+ `--restore`), `reset-password`, self-update, `--dev-apps`, `/etc/dootd/config.toml`, the recovery kit, dootd.db backups and the monorepo app path.
+- [ ] The installer asks nothing: it installs or updates, starts dootd and prints the setup address and a one-time password (24 h, single use). Re-running it is the update and the recovery path.
+- [ ] Setup address `https://<server IP>` with a self-signed certificate, open only until the dashboard domain is ready and no one-time password is pending; dashboard only, never apps.
+- [ ] Dashboard: set up the account from the one-time password, change the admin email, set the dashboard domain, enter the Cloudflare/GitHub tokens and the bucket; the home page lists missing setup steps.
+- [ ] App name = repository name; bucket folder per app; Add app restores a chosen folder's newest backup.
+- [ ] E2E scripts use only the installer and the dashboard.
+- [ ] Soak test: 5 apps running for 7 days on a 1 GB VPS, with real Cloudflare and R2.
+
+**Done when:** a fresh VPS goes from `curl | sudo bash` to a deployed app in under 10 minutes without touching SSH again, and v1.0.0 is tagged.
 
 ---
 
