@@ -70,7 +70,10 @@ db()        { python3 -c "import sqlite3,sys; c=sqlite3.connect('file:$DATA_ROOT
 schema()    { db "SELECT MAX(version) FROM schema_migrations"; }
 pre_schema() { python3 -c "import sqlite3; print(sqlite3.connect('file:$DATA_ROOT/dootd.db.pre-update?mode=ro',uri=True).execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0])"; }
 running_version() { dootd version | awk '{print $2}'; }
-is_version() { [ "$(running_version)" = "$1" ] && systemctl is-active --quiet "$UNIT" && dootd ctl status >/dev/null 2>&1; }
+file_is()   { [ "$(running_version)" = "$1" ]; }
+# is_version: the process serving the control socket runs version $1.
+is_version() { systemctl is-active --quiet "$UNIT" && [ "$(curl -fsS -m 5 --unix-socket /run/dootd/dootd.sock http://d/v1/version |
+  python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')" = "$1" ]; }
 edge_enforced() { dootd ctl edge | grep -Eq '^example.test .* enforced'; }
 s3_start() { systemd-run --unit=s3mock --collect -q "$E2E-bin/rclone" serve s3 --addr 127.0.0.1:9000 \
   --dir-cache-time 1s --auth-key "$S3_KEY,$S3_SECRET" "$S3DIR"; wait_for 10 curl -s -o /dev/null http://127.0.0.1:9000/; }
@@ -256,9 +259,11 @@ say "A release that cannot start is rolled back"
 publish v0.9.0
 check "ctl sees v0.9.0" bash -c "dootd ctl update | grep -q 'v0.9.0 is available'"
 dootd ctl update --install
-check "v0.9.0 was installed" wait_for 20 bash -c "[ \"\$(running_version)\" = v0.9.0 ]"
-check "rolled back to v0.8.0 after 3 failed starts" wait_for 180 is_version v0.8.0
-check "journal shows the rollback" bash -c "journalctl -u $UNIT --no-pager | grep -q 'v0.9.0 did not start 3 times'"
+check "v0.9.0 was installed" wait_for 20 file_is v0.9.0
+rolled_back() { journalctl -u "$UNIT" --no-pager | grep -q 'v0.9.0 did not start 3 times'; }
+check "the guard rolled back after 3 failed starts" wait_for 180 rolled_back
+check "journal shows the failed starts" bash -c "journalctl -u $UNIT --no-pager | grep -q 'made to fail after migrating'"
+check "v0.8.0 running again" wait_for 60 is_version v0.8.0
 check "database restored to the v0.8.0 schema" test "$(schema)" = $((SCHEMA_BEFORE + 1))
 check "no table from the broken release" test -z "$(db "SELECT name FROM sqlite_master WHERE name='e2e_broken'")"
 check "app serving again" wait_for 60 site_up
@@ -282,9 +287,10 @@ check "server wiped" bash -c "! id dootd-web 2>/dev/null && [ ! -e $DATA_ROOT ]"
 install_from v0.8.0 >/dev/null
 check "fresh install made a new master key" test "$(cat /etc/dootd/master.key)" != "$KEY_BEFORE"
 check "restore refuses a missing secret without a terminal" bash -c "! dootd init --restore $OUT/kit.txt --s3-access-key $S3_KEY </dev/null > $OUT/r1.txt 2>&1 && grep -q DOOTD_S3_SECRET $OUT/r1.txt"
-check "restore refuses a wrong secret" bash -c "! DOOTD_S3_SECRET=wrong dootd init --restore $OUT/kit.txt --s3-access-key $S3_KEY --ipv4 $IP2 --ipv6 off --yes </dev/null >/dev/null 2>&1"
+check "restore refuses a wrong secret" bash -c "! DOOTD_S3_SECRET=wrong dootd init --restore $OUT/kit.txt --s3-access-key $S3_KEY --ipv4 $IP2 --ipv6 off --yes --cloudflare-api $CF_API </dev/null >/dev/null 2>&1"
 check "nothing restored after the refusals" test ! -e "$DATA_ROOT/dootd.db"
-DOOTD_S3_SECRET="$S3_SECRET" dootd init --restore "$OUT/kit.txt" --s3-access-key "$S3_KEY" --ipv4 "$IP2" --ipv6 off --yes </dev/null | tee "$OUT/restore.txt"
+DOOTD_S3_SECRET="$S3_SECRET" dootd init --restore "$OUT/kit.txt" --s3-access-key "$S3_KEY" --ipv4 "$IP2" --ipv6 off --yes \
+  --cloudflare-api "$CF_API" </dev/null | tee "$OUT/restore.txt"
 check "master key from the kit" test "$(cat /etc/dootd/master.key)" = "$KEY_BEFORE"
 check "unused install key kept aside" bash -c "ls /etc/dootd/master.key.replaced-*"
 check "same host id" test "$(db "SELECT value FROM settings WHERE key='host_id'")" = "$HOST_ID"

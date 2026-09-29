@@ -21,6 +21,7 @@ import (
 
 	"github.com/sumitwaani2/dootd/internal/auth"
 	"github.com/sumitwaani2/dootd/internal/backup"
+	"github.com/sumitwaani2/dootd/internal/buildinfo"
 	"github.com/sumitwaani2/dootd/internal/deployer"
 	"github.com/sumitwaani2/dootd/internal/edge"
 	"github.com/sumitwaani2/dootd/internal/github"
@@ -104,6 +105,9 @@ func (s *Server) Serve(ctx context.Context, path string) error {
 	mux.HandleFunc("POST /v1/apps/{app}/restore", s.restore)
 	mux.HandleFunc("GET /v1/edge", s.edgeStatus)
 	mux.HandleFunc("GET /v1/update", s.updateStatus)
+	mux.HandleFunc("GET /v1/version", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"version": buildinfo.Version, "full": buildinfo.String()})
+	})
 	mux.HandleFunc("POST /v1/update", s.updateInstall)
 	mux.HandleFunc("POST /v1/edge/sync", s.edgeSync)
 	mux.HandleFunc("POST /v1/edge/zones/{zone}/ssl-strict", s.edgeStrict)
