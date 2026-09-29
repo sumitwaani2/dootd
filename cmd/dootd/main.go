@@ -16,9 +16,12 @@ Usage:
 
 Commands:
   serve            Run the dootd service (normally started by systemd)
-  init             Interactive first-time setup
+  init             First-time setup: admin, dashboard domain, Cloudflare (run once after install.sh)
+  init --restore   Rebuild a server from a recovery kit and the backup bucket
   reset-password   Reset the dashboard admin password
   ctl              Control a running dootd (deploy, rollback, status, logs)
+  update           Check for / install a new dootd release (same as Settings → Updates)
+  setup-host       Create directories, the master key and the systemd unit (used by install.sh)
   version          Print version information
   help             Show this help
 `
@@ -48,8 +51,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 		// Shortcut for: dootd ctl admin set-password [--email E]
 		return runCtl(append([]string{"admin", "set-password"}, args[1:]...), stdout, stderr)
 	case "init":
-		fmt.Fprintf(stderr, "dootd: %q is not implemented yet in %s\n", args[0], buildinfo.Version)
-		return 1
+		return runInit(args[1:], stdout, stderr)
+	case "update":
+		// Shortcut for: dootd ctl update [--install]
+		return runCtl(append([]string{"update"}, args[1:]...), stdout, stderr)
+	case "update-guard":
+		return runUpdateGuard(args[1:], stdout, stderr)
+	case "setup-host":
+		return runSetupHost(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "dootd: unknown command %q\n\n%s", args[0], usage)
 		return 2

@@ -13,7 +13,7 @@ This plan builds dootd in phases. Each phase ends with something that works and 
 | 4 | Dashboard | Login + the full click-to-deploy flow in the browser | ✅ |
 | 5 | Backups | Scheduled, pre-deploy and manual backups to S3/R2, plus restore | ✅ |
 | 6 | Monitoring | Host and app metrics, request stats, charts, warnings | ✅ |
-| 7 | Install and self-update → v1.0 | One-line install, `dootd init`, update from the UI, hardening | ⬜ |
+| 7 | Install and self-update → v1.0 | One-line install, `dootd init`, update from the UI, hardening | 🟨 |
 
 Phases 1–3 are mostly used through the CLI or a config file, so the risky parts (cgroups, builds, TLS) get proven before any UI work. Phase 4 connects everything to the browser.
 
@@ -106,16 +106,16 @@ Phases 1–3 are mostly used through the CLI or a config file, so the risky part
 
 ## Phase 7: Install, self-update, v1.0
 
-- [ ] `install.sh`: OS, cgroup and architecture checks; download + checksum; `make`; directories; master key; systemd unit; optional swapfile; optional ufw.
-- [ ] `dootd init` (interactive): admin, dashboard domain, CF token, IP detection → DNS, certificate and AOP for the dashboard → start the service.
+- [x] `install.sh`: OS, cgroup and architecture checks; download + checksum; `make`; directories; master key; systemd unit (embedded in the binary, `dootd setup-host`); optional swapfile; optional ufw.
+- [x] `dootd init` (interactive, or flags + env vars): admin, dashboard domain, CF token with a permission check, IP detection → DNS, certificate and AOP for the dashboard → start the service.
 - [x] `dootd reset-password` (done in Phase 4).
-- [ ] `dootd init --restore <recovery kit>`: rebuild a server from the recovery kit and the bucket (dootd.db + app backups).
-- [ ] Self-update from the UI, with a `.prev` fallback (architecture §15).
-- [ ] Hardening pass: fuzz the `dootd.toml` parser and the tar extraction, check how many file descriptors each process can open, run `go test -race`, and time a restart with 5 apps.
+- [x] `dootd init --restore <recovery kit>`: rebuild a server from the recovery kit and the bucket (dootd.db + app backups), then redeploy.
+- [x] Self-update from the UI (and `dootd ctl update`), with a `.prev` fallback (architecture §15).
+- [x] Hardening pass: fuzz the `dootd.toml` parser and the tar extraction, check how many file descriptors each process can open, run `go test -race`, and time a restart with 5 apps.
 - [ ] Soak test: 5 apps running for 7 days on a 1 GB VPS.
-- [ ] Final pass on the docs: README quick start, Cloudflare token setup walkthrough, troubleshooting.
+- [x] Final pass on the docs: README quick start, Cloudflare token setup walkthrough, troubleshooting.
 
-**Done when:** a fresh VPS goes from `curl | sudo bash` to a deployed app in under 10 minutes, and v1.0.0 is tagged.
+**Done when:** a fresh VPS goes from `curl | sudo bash` to a deployed app in under 10 minutes, and v1.0.0 is tagged. Automated in `scripts/e2e/phase7.sh` (89 checks, fake Cloudflare/GitHub, real S3 server): install → init → app → self-update → rollback → destroy + restore. Still open: the soak test and the real Cloudflare/R2 run need a VPS.
 
 ---
 

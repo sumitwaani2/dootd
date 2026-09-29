@@ -670,7 +670,7 @@ func (m *Manager) publicIPs(ctx context.Context) (string, string, error) {
 	if v4 == "" {
 		v4 = m.cfg.PublicIPv4
 		if v4 == "" {
-			ip, err := detectIP(ctx, "tcp4")
+			ip, err := DetectIP(ctx, "tcp4")
 			if err != nil {
 				return "", "", fmt.Errorf("detecting the public IPv4 address failed (set edge.public_ipv4 in config.toml): %w", err)
 			}
@@ -685,7 +685,7 @@ func (m *Manager) publicIPs(ctx context.Context) (string, string, error) {
 		case "off":
 			v6 = "off"
 		case "":
-			if ip, err := detectIP(ctx, "tcp6"); err == nil {
+			if ip, err := DetectIP(ctx, "tcp6"); err == nil {
 				v6 = ip
 			} else {
 				v6 = "off"
@@ -706,8 +706,8 @@ func (m *Manager) publicIPs(ctx context.Context) (string, string, error) {
 	return v4, v6, nil
 }
 
-// detectIP asks Cloudflare's trace endpoint which address we come from.
-func detectIP(ctx context.Context, network string) (string, error) {
+// DetectIP asks Cloudflare's trace endpoint which address we come from.
+func DetectIP(ctx context.Context, network string) (string, error) {
 	d := &net.Dialer{Timeout: 5 * time.Second}
 	c := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{
 		DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) { return d.DialContext(ctx, network, addr) },

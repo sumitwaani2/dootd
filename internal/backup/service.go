@@ -273,7 +273,7 @@ func (s *Service) client(ctx context.Context) (*s3.Client, s3.Config, bool, erro
 }
 
 func (s *Service) keyPrefix(c s3.Config, app string) string {
-	return c.Prefix + "/" + s.hostID + "/" + app + "/"
+	return KeyPrefix(c.Prefix, s.hostID, app)
 }
 
 // ---------------------------------------------------------------- rows

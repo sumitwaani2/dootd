@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -133,4 +135,36 @@ func applyMigration(ctx context.Context, db *sql.DB, m migration) error {
 		return fmt.Errorf("store: migration %04d_%s: commit: %w", m.version, m.name, err)
 	}
 	return nil
+}
+
+// PendingMigrations reports the schema version of the database at path and
+// the newest version this binary knows, without changing anything. A
+// database that does not exist yet reports version 0.
+func PendingMigrations(ctx context.Context, path string) (current, latest int, err error) {
+	ms, err := loadMigrations(embeddedMigrations)
+	if err != nil {
+		return 0, 0, err
+	}
+	latest = len(ms)
+	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		return 0, latest, nil
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return 0, latest, err
+	}
+	db, err := sql.Open("sqlite", dsn(abs, true))
+	if err != nil {
+		return 0, latest, err
+	}
+	defer db.Close()
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'`).Scan(&n); err != nil {
+		return 0, latest, fmt.Errorf("store: %s: %w", path, err)
+	}
+	if n == 0 {
+		return 0, latest, nil
+	}
+	current, err = currentVersion(ctx, db)
+	return current, latest, err
 }

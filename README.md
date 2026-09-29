@@ -16,6 +16,8 @@ Cloudflare (proxied, Full strict) ──HTTPS──► dootd (TLS + routing + da
 - **Light isolation.** Each app runs as its own Linux user, with cgroup v2 limits on memory, CPU and process count.
 - **SQLite backups to R2 or any S3-compatible storage.** Every 3 hours and before every deploy, kept for 48 hours, with one-click restore.
 - **Monitoring and logs.** Host and per-app CPU and memory, request stats, live logs, and build logs.
+- **Updates from the dashboard.** Verified downloads, and an automatic rollback (binary and database) if a new version fails to start.
+- **Rebuild anywhere.** `dootd init --restore` uses the recovery kit and the bucket to bring settings, apps and data back on a new server.
 
 ## Scope
 
@@ -23,9 +25,26 @@ Cloudflare (proxied, Full strict) ──HTTPS──► dootd (TLS + routing + da
 
 ## Status
 
-🚧 Phases 1-6 of 7 are done: a web dashboard to add apps, set env vars, deploy, roll back and watch logs; builds from git with the pinned Zig; health-checked deploys with automatic rollback; per-app users and cgroup limits; HTTPS on :443 behind Cloudflare (Origin CA certificates, Cloudflare-only access with Authenticated Origin Pulls, DNS records); SQLite backups to R2/S3 every 3 hours and before each deploy, with one-click restore; CPU, memory, disk and request charts for the server and every app, with warnings. The one-line installer, `dootd init` and self-update come next (Phase 7). Progress is tracked in the [Kiro spec](.kiro/specs/dootd/tasks.md).
+🚧 Phase 7 of 7 is nearly done. What works:
+- A web dashboard to add apps, set env vars, deploy, roll back and watch logs.
+- Builds from git with the pinned Zig, health-checked deploys with automatic rollback, per-app users and cgroup limits.
+- HTTPS on :443 behind Cloudflare, with Origin CA certificates, Cloudflare-only access with Authenticated Origin Pulls, and DNS records.
+- SQLite backups to R2/S3 with one-click restore, and monitoring charts and warnings.
+- The one-line installer and `dootd init`, self-update from the dashboard with automatic rollback, and `dootd init --restore` to rebuild a server from its recovery kit.
 
-### Try it on a test VPS
+Still to do before v1.0.0: a 7-day soak test and a run against real Cloudflare and R2 on a VPS. Progress is tracked in the [Kiro spec](.kiro/specs/dootd/tasks.md).
+
+## Quick start
+
+```bash
+# on a fresh Ubuntu 24.04+ VPS, once:
+curl -fsSL https://github.com/sumitwaani2/dootd/releases/latest/download/install.sh | sudo bash
+sudo dootd init     # admin email/password, dashboard domain, Cloudflare API token
+```
+
+Then open `https://<dashboard-domain>`, and you don't need SSH again. Updates are one click in **Settings → Updates**. [docs/cloudflare-setup.md](docs/cloudflare-setup.md) walks through the token, the setup and moving to a new server (`sudo dootd init --restore <recovery kit>`).
+
+### Test it on a VPS
 
 ```bash
 git clone https://github.com/sumitwaani2/dootd && cd dootd
@@ -35,9 +54,10 @@ sudo ./scripts/e2e/phase3.sh   # :443 edge against a fake Cloudflare API, 50 che
 sudo ./scripts/e2e/phase4.sh   # the dashboard, driven with curl through the edge, 83 checks
 sudo ./scripts/e2e/phase5.sh   # backups and restores with rclone serve s3 as the bucket, 55 checks
 sudo ./scripts/e2e/phase6.sh   # monitoring numbers against the kernel's counters, charts, warnings, dootd's budget, 48 checks
+sudo ./scripts/e2e/phase7.sh   # install.sh, dootd init, self-update + rollback, destroy and init --restore, 89 checks
 ```
 
-The scripts install dootd as a systemd service (phases 1–3 with a test-only `--dev-apps` file). Needs Go installed. While dootd runs, `sudo systemctl kill -s USR1 --kill-whom=main dootd` prints every app's status to `journalctl -u dootd`.
+The scripts need Go and install dootd as a systemd service; they run on every PR on GitHub's Ubuntu 24.04 VMs. While dootd runs, `sudo systemctl kill -s USR1 --kill-whom=main dootd` prints every app's status to `journalctl -u dootd`.
 
 ## Development
 
@@ -52,16 +72,6 @@ make test
 
 Releases: push a `vX.Y.Z` tag and GitHub Actions publishes the binaries, `checksums.txt` and `install.sh`.
 
-## Planned quick start
-
-```bash
-# on a fresh Ubuntu 24.04+ VPS, once:
-curl -fsSL https://github.com/sumitwaani2/dootd/releases/latest/download/install.sh | sudo bash
-sudo dootd init     # asks for admin email/password, dashboard domain, Cloudflare API token
-```
-
-Then open `https://<dashboard-domain>` and never SSH again.
-
 ## Docs
 
 | Doc | For |
@@ -69,5 +79,5 @@ Then open `https://<dashboard-domain>` and never SSH again.
 | [docs/app-contract.md](docs/app-contract.md) | Writing a Zig/C app that dootd can host |
 | [docs/architecture.md](docs/architecture.md) | How dootd works inside (for maintaining it long-term) |
 | [docs/implementation-plan.md](docs/implementation-plan.md) | Phase-by-phase build plan |
-| [docs/cloudflare-setup.md](docs/cloudflare-setup.md) | API token, config and Cloudflare settings |
+| [docs/cloudflare-setup.md](docs/cloudflare-setup.md) | API token, `dootd init`, moving servers, troubleshooting |
 | [.kiro/specs/dootd/](.kiro/specs/dootd/) | Kiro spec: requirements, design and task list |

@@ -81,3 +81,14 @@ jobs:
           go-version-file: go.mod
       - name: Phase 6 - monitoring
         run: sudo env "PATH=$PATH" GOTOOLCHAIN=local ./scripts/e2e/phase6.sh
+
+  phase7:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Phase 7 - install, init, self-update, restore
+        run: sudo env "PATH=$PATH" GOTOOLCHAIN=local ./scripts/e2e/phase7.sh

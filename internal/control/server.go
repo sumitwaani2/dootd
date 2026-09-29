@@ -21,12 +21,14 @@ import (
 
 	"github.com/sumitwaani2/dootd/internal/auth"
 	"github.com/sumitwaani2/dootd/internal/backup"
+	"github.com/sumitwaani2/dootd/internal/buildinfo"
 	"github.com/sumitwaani2/dootd/internal/deployer"
 	"github.com/sumitwaani2/dootd/internal/edge"
 	"github.com/sumitwaani2/dootd/internal/github"
 	"github.com/sumitwaani2/dootd/internal/layout"
 	"github.com/sumitwaani2/dootd/internal/logs"
 	"github.com/sumitwaani2/dootd/internal/metrics"
+	"github.com/sumitwaani2/dootd/internal/selfupdate"
 	"github.com/sumitwaani2/dootd/internal/supervisor"
 )
 
@@ -41,6 +43,7 @@ type Server struct {
 	Auth    *auth.Auth
 	Backups *backup.Service
 	Metrics *metrics.Collector
+	Update  *selfupdate.Service
 	Layout  layout.Layout
 	Log     *slog.Logger
 }
@@ -101,6 +104,11 @@ func (s *Server) Serve(ctx context.Context, path string) error {
 	mux.HandleFunc("POST /v1/apps/{app}/backups", s.runBackup)
 	mux.HandleFunc("POST /v1/apps/{app}/restore", s.restore)
 	mux.HandleFunc("GET /v1/edge", s.edgeStatus)
+	mux.HandleFunc("GET /v1/update", s.updateStatus)
+	mux.HandleFunc("GET /v1/version", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"version": buildinfo.Version, "full": buildinfo.String()})
+	})
+	mux.HandleFunc("POST /v1/update", s.updateInstall)
 	mux.HandleFunc("POST /v1/edge/sync", s.edgeSync)
 	mux.HandleFunc("POST /v1/edge/zones/{zone}/ssl-strict", s.edgeStrict)
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
@@ -475,11 +483,20 @@ func (s *Server) listBackups(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) runBackup(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
+	defer cancel()
+	if r.PathValue("app") == backup.SelfApp {
+		b, err := s.Backups.BackupSelf(ctx)
+		if err != nil {
+			writeErr(w, http.StatusConflict, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, b)
+		return
+	}
 	if s.app(w, r) == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
-	defer cancel()
 	b, err := s.Backups.Run(ctx, r.PathValue("app"), backup.KindManual, true, nil)
 	if err != nil {
 		writeErr(w, http.StatusConflict, err)
@@ -534,4 +551,39 @@ func (s *Server) metricsNow(w http.ResponseWriter, _ *http.Request) {
 		out = append(out, v)
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// updateStatus returns the update state; ?check=1 asks GitHub first.
+func (s *Server) updateStatus(w http.ResponseWriter, r *http.Request) {
+	if s.Update == nil {
+		writeErr(w, http.StatusConflict, errors.New("updates are not available"))
+		return
+	}
+	if r.URL.Query().Get("check") == "1" {
+		st, err := s.Update.Check(r.Context())
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, st)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.Update.Status(r.Context()))
+}
+
+// updateInstall installs the latest release and restarts dootd.
+func (s *Server) updateInstall(w http.ResponseWriter, r *http.Request) {
+	if s.Update == nil {
+		writeErr(w, http.StatusConflict, errors.New("updates are not available"))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+	defer cancel()
+	rel, err := s.Update.Install(ctx)
+	if err != nil {
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
+	s.Log.Info("update requested over the control socket", "to", rel.Tag)
+	writeJSON(w, http.StatusOK, map[string]string{"result": "dootd " + rel.Tag + " installed; restarting"})
 }

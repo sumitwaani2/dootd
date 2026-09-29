@@ -13,20 +13,20 @@ dootd is one Go process, run as root by systemd. It terminates TLS on :443, rout
 
 ```
 Cloudflare ─:443─► edge (CF-IP filter → TLS/SNI + AOP mTLS → Host router)
-                     ├─ dashboard host → web (auth, htmx, SSE)
+                     ├─ dashboard host → web (auth, SSE)
                      └─ app host → ReverseProxy → 127.0.0.1:$PORT → app (own uid + cgroup)
 deployer → github (clone) → toolchain (zig) → builder (build cgroup) → supervisor
 backup (VACUUM INTO → tar+zstd → s3)     metrics (/proc, cgroup, edge counters)
 store (dootd.db, migrations)             secrets (master.key, AES-256-GCM)
 ```
 
-Key decisions (full list in architecture.md §17): Go with `CGO_ENABLED=0`; no containers; stop-then-start deploys; deploy only on click; Cloudflare Origin CA plus zone AOP with dootd's own CA plus a Cloudflare IP filter; snapshot backups every 3 h; pinned Zig per app, also used as the C compiler; htmx and server-rendered SVG for the UI.
+Key decisions (full list in architecture.md §17): Go with `CGO_ENABLED=0`; no containers; stop-then-start deploys; deploy only on click; Cloudflare Origin CA plus zone AOP with dootd's own CA plus a Cloudflare IP filter; snapshot backups every 3 h; pinned Zig per app, also used as the C compiler; server-rendered HTML with a small vanilla script and server-rendered SVG charts for the UI (no htmx, D9); self-update with the previous binary as start guard (D29).
 
 ## Components and Interfaces
 
 | Package | Responsibility | Requirements |
 |---|---|---|
-| `cmd/dootd` | Subcommands: `serve`, `init`, `reset-password`, `version` | 1.2, 2.5, 2.6 |
+| `cmd/dootd` | Subcommands: `serve`, `init [--restore]`, `setup-host`, `update`, `update-guard`, `ctl`, `reset-password`, `version` | 1.2, 2.4–2.6, 14.6, 17 |
 | `internal/buildinfo` | Version, commit and date injected with `-ldflags` | 1.2 |
 | `internal/store` | SQLite open, single writer, embedded migrations, settings | 4 |
 | `internal/secrets` | Master key lifecycle, AEAD seal/open | 3 |
@@ -43,7 +43,8 @@ Key decisions (full list in architecture.md §17): Go with `CGO_ENABLED=0`; no c
 | `internal/logs` | Rotating files, ring buffer, live fan-out | 13 |
 | `internal/backup`, `internal/s3` | Snapshot, archive, upload, retention, restore | 14, 15 |
 | `internal/metrics` | Sampling, rollups, warnings | 16 |
-| `internal/selfupdate` | Release check, verify, swap, fallback | 17 |
+| `internal/selfupdate` | Release check, verify, swap, update marker, start guard and rollback | 17 |
+| `contrib/systemd` | The systemd unit, embedded for `dootd setup-host` | 2.4 |
 
 ### Phase 0 interfaces (fixed now, used by every later phase)
 
@@ -100,4 +101,23 @@ Defined in architecture.md §7. Phase 0 creates only `schema_migrations(version,
 - Unit tests for pure logic: secrets round-trip and tamper cases, migration ordering and failure, `dootd.toml` validation, IP range matching, retention selection, the deploy state machine with fakes.
 - Integration tests on Linux CI for cgroup, user and supervisor behaviour, gated by a `DOOTD_INTEGRATION=1` env var because they need root.
 - Manual "done when" checks on a real 1 GB Ubuntu 24.04 VPS at the end of each phase (see tasks.md).
-- Fuzzing for the `dootd.toml` parser and the tar and xz extraction (Phase 7).
+- Fuzzing (Phase 7): the `dootd.toml` parser, the Zig tar.xz extraction (structured archives; nothing may be written outside the destination), backup archive extraction and the recovery kit parser. The seeds run with every `go test`; `go test -fuzz` runs them longer.
+
+## Phase 7 interfaces
+
+**selfupdate**
+```go
+type Updater struct{ Repo, API, Current, Binary, DataRoot string; HTTP *http.Client }
+func (u *Updater) Latest(ctx) (Release, error)       // GitHub releases/latest
+func (u *Updater) Apply(ctx, rel Release) error      // verify, dootd.prev, update.json, rename
+func Newer(tag, current string) bool                 // semver; dev builds always update
+func Guard(binary, dataRoot string) (string, error)  // run by dootd.prev before each start
+func Finish(dataRoot, current string) (Result, bool, error)
+type Service struct{ *Updater; Store; Busy func() string; Restart func(); Log }  // Check, Install, Status, FinishAfter
+```
+
+**store**: `PendingMigrations(ctx, path) (current, latest int, err error)` — lets `serve` copy dootd.db to `dootd.db.pre-update` before migrating (Req 17.3).
+
+**secrets**: `Install(path, hexKey) (*Box, error)` — installs a known key (recovery kit); never overwrites a different one (`ErrKeyMismatch`).
+
+**backup**: `Kit` with `Format` / `ParseKit` (the recovery kit), `KeyPrefix`, `Newest`, `Decompress`, `UnpackInto` (verify, then unpack an archive into a DATA_DIR) for `dootd init --restore`.
