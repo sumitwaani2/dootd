@@ -84,6 +84,20 @@
   {{end}}
 </section>
 
+{{with .Data.Update}}
+<section class="card" id="updates">
+  <h2>Updates</h2>
+  <p>This server runs dootd <b>{{.Current}}</b>{{if .Dev}} <span class="muted">(a development build)</span>{{end}}.
+    {{if .Latest}}Latest release: <b>{{.Latest}}</b>{{with .LatestURL}} (<a href="{{.}}" rel="noreferrer">release notes</a>){{end}}, checked {{ago .Checked}}.{{else if .CheckError}}<span class="error-text">Last check failed: {{.CheckError}}</span>{{else}}<span class="muted">Not checked yet.</span>{{end}}</p>
+  {{with .Last}}<p class="{{if .OK}}muted{{else}}error-text{{end}}">Last update ({{datetime .At}}): {{.Detail}}.</p>{{end}}
+  <form method="post" action="/settings/update/check" class="inline">{{template "csrf" $csrf}}<button>Check for updates</button></form>
+  {{if .Newer}}
+  <form method="post" action="/settings/update/install" class="inline" data-confirm="Update dootd to {{.Latest}}? dootd and every app restart (a few seconds of downtime). If the new version fails to start 3 times, dootd goes back to {{.Current}} on its own.">{{template "csrf" $csrf}}<button>Update to {{.Latest}}</button></form>
+  {{end}}
+  <p class="muted">The download is checked against the release's checksums.txt. The current binary is kept as dootd.prev and dootd.db is copied before any database change.</p>
+</section>
+{{end}}
+
 <section class="card">
   <h2>Zig toolchains</h2>
   <p class="muted">Downloaded when a deploy needs them. Deleting one only means the next build that pins it downloads it again.</p>

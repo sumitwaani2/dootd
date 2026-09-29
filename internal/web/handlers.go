@@ -460,6 +460,9 @@ func (s *Server) settingsPage(w http.ResponseWriter, r *http.Request) {
 		}
 		data["SelfBackups"] = self
 	}
+	if s.Update != nil {
+		data["Update"] = s.Update.Status(ctx)
+	}
 	s.render(w, r, http.StatusOK, "settings", "Settings", "settings", data)
 }
 

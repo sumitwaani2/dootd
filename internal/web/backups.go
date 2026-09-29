@@ -109,27 +109,16 @@ func (s *Server) recoveryKit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	host, _ := os.Hostname()
-	var b strings.Builder
-	fmt.Fprintf(&b, "dootd recovery kit\n==================\n\n")
-	fmt.Fprintf(&b, "Created:     %s\nServer:      %s\nHost ID:     %s\nDashboard:   https://%s\ndootd:       %s\n\n",
-		time.Now().UTC().Format(time.RFC3339), host, s.Backups.HostID(), s.Host, s.Version)
-	fmt.Fprintf(&b, "Master key (%s, mode 0600):\n%s\n", s.MasterKeyPath, strings.TrimSpace(string(key)))
-	if c, ok, _ := s.Backups.S3Config(ctx); ok {
-		fmt.Fprintf(&b, "Backups:     %s  bucket %s  under %s/%s/\n", c.Endpoint, c.Bucket, c.Prefix, s.Backups.HostID())
-		fmt.Fprintf(&b, "             (the access key is not included; keep it with this kit)\n")
-	} else {
-		fmt.Fprintf(&b, "Backups:     no S3 bucket configured; backups are only on the server itself\n")
+	kit := backup.Kit{
+		Created: time.Now(), Server: host, HostID: s.Backups.HostID(), Dashboard: s.Host, Version: s.Version,
+		KeyPath: s.MasterKeyPath, MasterKey: strings.TrimSpace(string(key)),
 	}
-	b.WriteString(`
-The master key decrypts the tokens and env vars stored in dootd.db,
-including the copies in the daily dootd.db backups (<prefix>/<host id>/_dootd/).
-App databases in <prefix>/<host id>/<app>/ are not encrypted by dootd
-(protect the bucket itself). Keep this file offline, e.g. in a password
-manager. Anyone with it and a dootd.db backup can read your secrets.
-`)
+	if c, ok, _ := s.Backups.S3Config(ctx); ok {
+		kit.Endpoint, kit.Region, kit.Bucket, kit.Prefix = c.Endpoint, c.Region, c.Bucket, c.Prefix
+	}
 	s.Store.SetSetting(ctx, backup.SettingKitSaved, []byte(time.Now().UTC().Format(time.RFC3339)))
 	s.Log.Info("recovery kit downloaded", "ip", r.Header.Get("CF-Connecting-IP"))
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="dootd-recovery-kit-%s.txt"`, s.Backups.HostID()))
-	w.Write([]byte(b.String()))
+	w.Write([]byte(kit.Format()))
 }

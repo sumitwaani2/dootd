@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"runtime/debug"
 	"sort"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -28,6 +29,7 @@ import (
 	"github.com/sumitwaani2/dootd/internal/logs"
 	"github.com/sumitwaani2/dootd/internal/metrics"
 	"github.com/sumitwaani2/dootd/internal/secrets"
+	"github.com/sumitwaani2/dootd/internal/selfupdate"
 	"github.com/sumitwaani2/dootd/internal/store"
 	"github.com/sumitwaani2/dootd/internal/supervisor"
 	"github.com/sumitwaani2/dootd/internal/toolchain"
@@ -75,6 +77,9 @@ func serve(log *slog.Logger, cfgPath string, cfgExplicit bool, devApps, socket s
 	}
 
 	ctx := context.Background()
+	if err := copyBeforeMigrating(ctx, log, cfg.DBPath()); err != nil {
+		return err
+	}
 	st, err := store.Open(ctx, cfg.DBPath())
 	if err != nil {
 		return err
@@ -85,6 +90,9 @@ func serve(log *slog.Logger, cfgPath string, cfgExplicit bool, devApps, socket s
 	}
 	ver, _ := st.SchemaVersion(ctx)
 	log.Info("state database ready", "path", cfg.DBPath(), "schema", ver)
+	if buildinfo.FailAfterMigrate != "" {
+		return errors.New("this build is made to fail after migrating (E2E rollback test)")
+	}
 
 	cg, err := cgroup.Setup(cfg.CgroupRoot)
 	if err != nil {
@@ -126,6 +134,20 @@ func serve(log *slog.Logger, cfgPath string, cfgExplicit bool, devApps, socket s
 
 	runCtx, stop := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+	var restarting atomic.Bool
+	upd := &selfupdate.Service{
+		Updater: &selfupdate.Updater{Repo: cfg.Update.Repo, API: cfg.Update.API, Current: buildinfo.Version, DataRoot: cfg.DataRoot},
+		Store:   st, Log: log.With("component", "update"),
+		Busy: func() string {
+			for _, name := range dep.Apps() {
+				if id := dep.Pending(name); id != 0 {
+					return fmt.Sprintf("deployment #%d of %s is in progress", id, name)
+				}
+			}
+			return ""
+		},
+		Restart: func() { restarting.Store(true); stop() },
+	}
 
 	var edgeMgr *edge.Manager
 	if cfg.Edge.Listen != "off" {
@@ -176,7 +198,7 @@ func serve(log *slog.Logger, cfgPath string, cfgExplicit bool, devApps, socket s
 		}
 		dash := &web.Server{
 			Auth: authSvc, Apps: appSvc, Dep: dep, Sup: sup, Edge: edgeMgr, Zig: dep.Zig, Store: st,
-			Backups: bk, MasterKeyPath: cfg.MasterKey, Metrics: mc,
+			Backups: bk, MasterKeyPath: cfg.MasterKey, Metrics: mc, Update: upd,
 			Thresholds: web.Thresholds{DiskPercent: cfg.Monitoring.DiskWarnPercent,
 				MemoryPercent: cfg.Monitoring.MemoryWarnPercent, CertDays: cfg.Monitoring.CertWarnDays},
 			Layout: lay, Host: cfg.Edge.DashboardDomain, Version: buildinfo.Version, Log: log.With("component", "web"),
@@ -198,7 +220,7 @@ func serve(log *slog.Logger, cfgPath string, cfgExplicit bool, devApps, socket s
 		edgeMgr.Run(runCtx)
 	}
 
-	ctl := &control.Server{Sup: sup, Dep: dep, Edge: edgeMgr, Auth: authSvc, Backups: bk, Metrics: mc, Layout: lay, Log: log}
+	ctl := &control.Server{Sup: sup, Dep: dep, Edge: edgeMgr, Auth: authSvc, Backups: bk, Metrics: mc, Update: upd, Layout: lay, Log: log}
 	ctlErr := make(chan error, 1)
 	go func() { ctlErr <- ctl.Serve(runCtx, socket) }()
 	log.Info("control socket ready", "path", socket)
@@ -207,6 +229,7 @@ func serve(log *slog.Logger, cfgPath string, cfgExplicit bool, devApps, socket s
 	bk.Schedule(runCtx)
 	mc.Run(runCtx)
 	go sup.StartAll(runCtx, func(name string) bool { return dep.DesiredRunning(runCtx, name) })
+	upd.FinishAfter(runCtx, 20*time.Second)
 
 	usr1 := make(chan os.Signal, 1)
 	signal.Notify(usr1, syscall.SIGUSR1)
@@ -247,7 +270,29 @@ loop:
 		return fmt.Errorf("stopping apps: %w", err)
 	}
 	os.Remove(socket)
+	if restarting.Load() {
+		log.Info("all apps stopped; exiting so systemd starts the new version")
+		return nil
+	}
 	log.Info("all apps stopped; bye")
+	return nil
+}
+
+// copyBeforeMigrating saves dootd.db as dootd.db.pre-update before a new
+// binary applies migrations (Req 17.3), so a rollback to the previous
+// binary also gets a schema it understands.
+func copyBeforeMigrating(ctx context.Context, log *slog.Logger, db string) error {
+	cur, latest, err := store.PendingMigrations(ctx, db)
+	if err != nil || cur == 0 || cur >= latest {
+		return nil // fresh database, up to date, or too new (store.Open reports it)
+	}
+	dst := db + selfupdate.PreUpdateSuffix
+	os.Remove(dst)
+	if err := backup.Snapshot(ctx, db, dst); err != nil {
+		return fmt.Errorf("copying dootd.db before migrating it from schema %d to %d: %w", cur, latest, err)
+	}
+	os.Chmod(dst, 0o600)
+	log.Info("saved a copy of dootd.db before migrating", "from_schema", cur, "to_schema", latest, "copy", dst)
 	return nil
 }
 

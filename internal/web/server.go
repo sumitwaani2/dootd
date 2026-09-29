@@ -26,6 +26,7 @@ import (
 	"github.com/sumitwaani2/dootd/internal/edge"
 	"github.com/sumitwaani2/dootd/internal/layout"
 	"github.com/sumitwaani2/dootd/internal/metrics"
+	"github.com/sumitwaani2/dootd/internal/selfupdate"
 	"github.com/sumitwaani2/dootd/internal/store"
 	"github.com/sumitwaani2/dootd/internal/supervisor"
 	"github.com/sumitwaani2/dootd/internal/toolchain"
@@ -55,6 +56,7 @@ type Server struct {
 	// MasterKeyPath is included in the recovery kit.
 	MasterKeyPath string
 	Metrics       *metrics.Collector
+	Update        *selfupdate.Service
 	Thresholds    Thresholds
 	Layout        layout.Layout
 	Host          string // dashboard hostname
@@ -103,6 +105,8 @@ func (s *Server) Handler() (http.Handler, error) {
 	authed("POST /apps/{app}/restore", s.restoreBackup)
 	authed("POST /settings/s3", s.setS3)
 	authed("POST /settings/recovery-kit", s.recoveryKit)
+	authed("POST /settings/update/check", s.updateCheck)
+	authed("POST /settings/update/install", s.updateInstall)
 	authed("GET /apps/{app}/logs", s.logsPage)
 	authed("GET /apps/{app}/logs/stream", s.logsStream)
 	authed("GET /deployments/{id}", s.deploymentPage)

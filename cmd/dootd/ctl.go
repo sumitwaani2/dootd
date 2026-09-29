@@ -21,6 +21,7 @@ import (
 	"github.com/sumitwaani2/dootd/internal/control"
 	"github.com/sumitwaani2/dootd/internal/deployer"
 	"github.com/sumitwaani2/dootd/internal/edge"
+	"github.com/sumitwaani2/dootd/internal/selfupdate"
 )
 
 const ctlUsage = `dootd ctl - control a running dootd over its local socket (run as root)
@@ -37,7 +38,7 @@ Commands:
   deployments <app>             Show deploy history
   logs <app> [-f] [-n N]        Show (and follow) app logs
   start|stop|restart <app>      Control an app
-  backup <app>                  Back up the app's SQLite databases now
+  backup <app>                  Back up the app's SQLite databases now (_dootd: dootd's own dootd.db)
   backups <app>                 List backups
   restore <app> <backup id>     Restore a backup (stops and restarts the app)
   github-token                  Read a GitHub token from stdin and store it encrypted
@@ -48,6 +49,7 @@ Commands:
   edge                          Show TLS, DNS, AOP and Cloudflare status
   edge sync                     Sync DNS records, certificates and AOP with Cloudflare now
   edge set-strict <zone>        Set a zone's SSL/TLS mode to Full (strict)
+  update [--install]            Check for a new dootd release; --install installs it and restarts
 `
 
 type ctlClient struct {
@@ -167,6 +169,8 @@ func runCtl(args []string, stdout, stderr io.Writer) int {
 			return nil
 		case "edge":
 			return ctlEdge(c, rest, stdout)
+		case "update":
+			return ctlUpdate(c, rest, stdout)
 		case "backup", "backups", "restore":
 			return ctlBackup(c, cmd, rest, stdout)
 		case "admin":
@@ -555,4 +559,35 @@ func ctlTop(c *ctlClient, out io.Writer) error {
 			mb(int64(m.IORead)), mb(int64(m.IOWrite)), m.Req, m.Req5xx, p95)
 	}
 	return tw.Flush()
+}
+
+func ctlUpdate(c *ctlClient, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("update", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	install := fs.Bool("install", false, "install the latest release and restart")
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
+		return errors.New("usage: dootd ctl update [--install]")
+	}
+	var st selfupdate.Status
+	if err := c.do(http.MethodGet, "/v1/update?check=1", nil, &st); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "running %s, latest release %s\n", st.Current, st.Latest)
+	if st.Last != nil {
+		fmt.Fprintf(out, "last update (%s): %s\n", st.Last.At.Local().Format(time.DateTime), st.Last.Detail)
+	}
+	if !st.Newer {
+		fmt.Fprintln(out, "up to date")
+		return nil
+	}
+	if !*install {
+		fmt.Fprintf(out, "%s is available: dootd ctl update --install\n", st.Latest)
+		return nil
+	}
+	var res map[string]string
+	if err := c.do(http.MethodPost, "/v1/update", nil, &res); err != nil {
+		return err
+	}
+	fmt.Fprintln(out, res["result"])
+	return nil
 }

@@ -319,6 +319,12 @@ func extractTarXz(archive, dst string) error {
 			return fmt.Errorf("unsafe path %q in archive", h.Name)
 		}
 		target := filepath.Join(dst, rel)
+		// A path through a symlink extracted earlier could escape dst
+		// (a/b -> .., a/b/c -> .. resolves outside), so parents must be
+		// real directories and the entry itself must not exist yet.
+		if err := realParents(dst, rel); err != nil {
+			return fmt.Errorf("unsafe path %q in archive: %w", h.Name, err)
+		}
 		switch h.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(target, 0o755); err != nil {
@@ -365,6 +371,30 @@ func extractTarXz(archive, dst string) error {
 			return fmt.Errorf("unsupported entry type %q for %q", h.Typeflag, h.Name)
 		}
 	}
+}
+
+// realParents checks that every existing parent of rel below dst is a
+// directory, not a symlink.
+func realParents(dst, rel string) error {
+	cur := dst
+	parts := strings.Split(filepath.Dir(rel), string(filepath.Separator))
+	for _, p := range parts {
+		if p == "." || p == "" {
+			continue
+		}
+		cur = filepath.Join(cur, p)
+		st, err := os.Lstat(cur)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if !st.IsDir() {
+			return fmt.Errorf("%s is not a directory", strings.TrimPrefix(cur, dst+"/"))
+		}
+	}
+	return nil
 }
 
 // List returns installed toolchains, newest version first.
