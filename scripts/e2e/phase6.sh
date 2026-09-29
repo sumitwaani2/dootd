@@ -53,7 +53,7 @@ print("")
 PY
 }
 has_scope() { [ -n "$(m "$1" mem)" ]; }
-fivexx()    { get /apps/one | grep -oE '\([0-9]+ 5xx\)' | head -n1 | grep -oE '[0-9]+'; }
+fivexx()    { get /apps/one | grep -oE '\([0-9]+ 5xx\)' | head -n1 | sed -E 's/\(([0-9]+) 5xx\)/\1/'; }
 rows()      { db "SELECT count(*) FROM metrics_1m WHERE scope = '$1'"; }
 has_rows()  { [ "$(rows "$1")" -ge "$2" ]; }
 # kernel_cpu <app> <seconds>: CPU % of one core measured from cpu.stat.
@@ -86,12 +86,22 @@ e2e_prepare -zones example.test -short-first
 e2e_setup
 
 say "Five apps"
+first=1
 for spec in "one:1:256M:$APP_HOST" "half:0.5:256M:" "mem:1:256M:" "oom:1:64M:" "idle:1:256M:"; do
   IFS=: read -r name cpu memlim domain <<<"$spec"
   mkecho "$name"
   create_app "$name" --data cpu="$cpu" --data memory="$memlim" --data domain="$domain" >/dev/null
   check "deploy $name" deploy_is succeeded "$name"
   PORTS[$name]="$(port_of "$name")"
+  if [ "$first" = 1 ]; then
+    first=0
+    # The fake Cloudflare issues a 10-day first certificate; the next sync
+    # (every Add app syncs) renews it, so look at the warning now.
+    check "certificate warning while the first (10-day) certificate is in use" wait_for 30 page_has / "expires in"
+    refresh_csrf /settings
+    post /settings/edge-sync >/dev/null
+    check "renewed certificate clears the warning" page_lacks / "and has not been renewed"
+  fi
 done
 wait_for 30 dns_is "$APP_HOST"
 wait_for 60 all_healthy
@@ -101,10 +111,6 @@ check "server sampled" wait_for 30 has_scope _host
 for s in _dootd $APPS; do check "$s sampled" wait_for 30 has_scope "$s"; done
 check "server memory total matches /proc/meminfo (within 5%)" between "$(python3 -c "print(abs($(m _host mem_limit)/($(awk '/^MemTotal/ {print $2}' /proc/meminfo)*1024)-1))")" 0 0.05
 check "app memory limit reported (oom: 64 MB)" test "$(m oom mem_limit)" = 67108864
-check "certificate warning while the first (10-day) certificate is in use" page_has / "expires in"
-refresh_csrf /settings
-post /settings/edge-sync >/dev/null
-check "renewed certificate clears the warning" page_lacks / "and has not been renewed"
 
 say "CPU: dootd's numbers against the kernel's counters"
 local_app one "/burn?s=40" >/dev/null

@@ -111,20 +111,22 @@ create_app() {
   post /apps --data type=c --data-urlencode "repo=file://$GIT/$name.git" --data branch=main "$@"
 }
 # deploy <app> [rollback release]: start a deployment and follow its live log
-# into $LAST; prints the final status ("refused: <flash>" if not started).
+# into $LAST; sets DEP and STATUS (the final status, or "refused").
+# Not meant for $(...): the variables must reach the caller.
 N=0
 deploy() {
   local app="$1" loc
-  N=$((N + 1)); LAST="$OUT/deploy-$N.txt"
+  N=$((N + 1)); LAST="$OUT/deploy-$N.txt"; DEP=""; STATUS=""
   if [ -n "${2:-}" ]; then loc="$(post "/apps/$app/rollback" --data "release=$2")"; else loc="$(post "/apps/$app/deploy")"; fi
   case "$loc" in
     *"/deployments/"*) DEP="${loc##*/deployments/}" ;;
-    *) echo "refused"; : > "$LAST"; return 0 ;;
+    *) STATUS="refused"; : > "$LAST"; return 0 ;;
   esac
   dc -N --max-time 900 "$DASH/deployments/$DEP/stream" > "$LAST" || true
-  grep -A1 '^event: done' "$LAST" | tail -n1 | sed 's/^data: //'
+  STATUS="$(grep -A1 '^event: done' "$LAST" | tail -n1 | sed 's/^data: //')"
 }
-deploy_is() { local want="$1"; shift; local got; got="$(deploy "$@")"; [ "$got" = "$want" ] || { echo "   deploy $*: $got"; tail -n 30 "$LAST" | sed 's/^/   | /'; return 1; }; }
+deploy_is() { local want="$1"; shift; deploy "$@"; [ "$STATUS" = "$want" ] || { echo "   deploy $*: $STATUS"; tail -n 30 "$LAST" | sed 's/^/   | /'; return 1; }; }
+refused()   { deploy "$@"; [ "$STATUS" = refused ]; }
 last_has() { grep -qF -- "$1" "$LAST"; }
 # port_of <app>: the app's local port (shown on its page).
 port_of() { get "/apps/$1" | grep -oE 'port [0-9]+' | head -n1 | awk '{print $2}'; }

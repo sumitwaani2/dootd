@@ -119,7 +119,7 @@ check "rollback to R2 succeeds" deploy_is succeeded sample-c "$R2"
 check "rollback did not build" bash -c "! grep -qF 'cloning' $LAST"
 check "serving v2 again" lpage_has "$PC" "sample-c v2"
 check "current -> R2" test "$(current sample-c)" = "$R2"
-check "rolling back to the current release is refused" test "$(deploy sample-c "$R2")" = refused
+check "rolling back to the current release is refused" refused sample-c "$R2"
 
 say "dootd restart keeps the current release and desired state"
 systemctl restart "$UNIT"

@@ -63,7 +63,8 @@ check "X-Forwarded-Proto is https" test "$(json_field echo.example.test "['heade
 spoof() { [ "$(site echo.example.test / -H 'X-Forwarded-For: 6.6.6.6' | python3 -c "import json,sys; print(json.load(sys.stdin)['headers']['X-Forwarded-For'])")" = 203.0.113.7 ]; }
 check "a spoofed X-Forwarded-For is replaced" spoof
 check "second zone app answers" site_is 200 app.other.test /
-check "dashboard answers (sign-in page)" bash -c "cfcurl https://$D/login | grep -q 'Sign in'"
+signin_page() { local b; b="$(cfcurl "https://$D/login")" || return 1; grep -q 'Sign in' <<<"$b"; }
+check "dashboard answers (sign-in page)" signin_page
 stream_ok() { [ "$(site app.other.test /stream | grep -c tick)" = 3 ]; }
 check "streaming response passes through" stream_ok
 check "WebSocket-style upgrade works" "$BIN/e2etool" upgrade -addr "$CF_IP:443" -host echo.example.test \
