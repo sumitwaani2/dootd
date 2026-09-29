@@ -15,7 +15,7 @@ Tasks are grouped by the phases in `docs/implementation-plan.md`. Each phase end
     - _Requirements: 3.1, 3.2, 3.3_
   - [x] 2.2 Implement `Box.Seal` / `Box.Open` with AES-256-GCM, a versioned format, a random nonce, and purpose as associated data
     - _Requirements: 3.1, 3.4_
-  - [ ]* 2.3 Unit tests: round-trip, wrong purpose, tampered ciphertext, bad permissions, bad length, never overwriting an existing key
+  - [x]* 2.3 Unit tests: round-trip, wrong purpose, tampered ciphertext, bad permissions, bad length, never overwriting an existing key
     - _Requirements: 3.2, 3.3, 3.4_
 
 - [x] 3. Store package
@@ -25,7 +25,7 @@ Tasks are grouped by the phases in `docs/implementation-plan.md`. Each phase end
     - _Requirements: 4.3, 4.4, 4.5_
   - [x] 3.3 Add `GetSetting` / `SetSetting` / `SchemaVersion`
     - _Requirements: 4.1_
-  - [ ]* 3.4 Unit tests: fresh DB, idempotent re-open, failing migration rolls back, schema too new
+  - [x]* 3.4 Unit tests: fresh DB, idempotent re-open, failing migration rolls back, schema too new
     - _Requirements: 4.3, 4.4, 4.5_
 
 - [x] 4. CI and release pipeline
@@ -70,7 +70,7 @@ Tasks are grouped by the phases in `docs/implementation-plan.md`. Each phase end
   - _Requirements: 6.1, 9.2_
 - [x] 14. `dootd.toml` parser and validator with complete error reporting
   - _Requirements: 8.1_
-  - [ ]* 14.1 Unit and fuzz tests for the parser
+  - [x]* 14.1 Unit and fuzz tests for the parser (done in task 48)
 - [x] 15. `toolchain`: index.json, download, SHA-256 verification, safe tar.xz extraction, atomic install, list/delete
   - _Requirements: 8.2, 8.3_
 - [x] 16. `builder`: build cgroup, app user, PATH/CC/CXX, timeout, live build log, keep 20 logs
@@ -158,14 +158,17 @@ Tasks are grouped by the phases in `docs/implementation-plan.md`. Each phase end
 
 ## Phase 7: Install, self-update, v1.0
 
-- [ ] 45. Full `install.sh` (directories, master key, systemd unit with `Delegate=yes`, `make`, swapfile and ufw prompts)
+- [x] 45. Full `install.sh` (directories, master key, systemd unit with `Delegate=yes`, `make`, swapfile and ufw prompts)
   - _Requirements: 2.4_
-- [ ] 46. `dootd init` interactive bootstrap (`dootd reset-password` done in task 31)
+  - The unit is embedded in the binary (`contrib/systemd`) and installed by `dootd setup-host` (D28)
+- [x] 46. `dootd init` interactive bootstrap (`dootd reset-password` done in task 31); also non-interactive with flags + env vars (D32)
   - _Requirements: 2.5, 2.6_
-- [ ] 46b. `dootd init --restore <recovery kit>`: rebuild a server from the kit and the bucket
+- [x] 46b. `dootd init --restore <recovery kit>`: rebuild a server from the kit and the bucket (kit now includes the region); `dootd ctl backup _dootd`
   - _Requirements: 14.6_
-- [ ] 47. Self-update: release check, verification, atomic swap, `.prev` + pre-update DB copy, `ExecStartPre` fallback
+- [x] 47. Self-update: release check, verification, atomic swap, `.prev` + pre-update DB copy, `ExecStartPre` fallback (Settings → Updates, `dootd ctl update`)
   - _Requirements: 17.1–17.4_
-- [ ] 48. Hardening: fuzzing (toml, tar/xz), `-race`, fd limits, restart timing with 5 apps
+- [x] 48. Hardening: fuzzing (toml, tar/xz, backup archives, recovery kit), `-race`, fd limits, restart timing
+  - Unit tests for secrets, store, config, manifest, kit, archives, selfupdate. Fuzzing found and fixed a tar.xz extraction escape through chained symlinks
+  - Automated: `scripts/e2e/phase7.sh` (89 checks): install, init (incl. a pty run), self-update, tampered release, rollback of a release that cannot start, destroy + `init --restore`, fd limits, restart of 6 apps in 1.4 s with 5 apps
 - [ ] 49. 7-day soak test with 5 apps on a 1 GB VPS
 - [ ] 50. Docs pass (README quick start, Cloudflare token walkthrough, troubleshooting); tag `v1.0.0`

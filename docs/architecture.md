@@ -71,7 +71,8 @@ All components are goroutines inside one process and talk to each other through 
 ## 5. Code layout
 
 ```
-cmd/dootd/            main: subcommands (serve, ctl, init, reset-password, version)
+cmd/dootd/            main: subcommands (serve, ctl, init [--restore], setup-host, update, update-guard, reset-password, version)
+contrib/systemd/      dootd.service, embedded into the binary (`dootd setup-host` installs it)
 internal/
   config/             static config file + defaults
   store/              SQLite schema, migrations, queries
@@ -95,18 +96,21 @@ internal/
   s3/                 thin wrapper over minio-go
   metrics/            sampling, ring buffers, rollups
   logs/               rotating log files + live tail fan-out
-  selfupdate/         fetch release, verify, swap binary, restart
+  selfupdate/         release check, verify, swap binary, update marker, start guard/rollback
 ```
 
 ## 6. Filesystem layout
 
 ```
 /usr/local/bin/dootd                      binary
+/usr/local/bin/dootd.prev                 the previous binary, kept by a self-update (runs the start guard)
 /etc/dootd/config.toml                    static config (dashboard domain, data root, listen addr)
 /etc/dootd/master.key                     32 random bytes, 0600 root; encrypts secrets in DB
 /etc/systemd/system/dootd.service
 /var/lib/dootd/
   dootd.db                                dootd state
+  dootd.db.pre-update                     copy taken by a new binary before it migrates dootd.db
+  update.json                             self-update marker (from, to, start attempts, status)
   certs/<hostname>/{cert.pem,key.pem}     Origin CA certs (0600)
   aop/{ca.pem,ca.key,client.pem,client.key}  dootd's private AOP CA + client cert
   toolchains/zig/<version>/               extracted Zig releases (shared, read-only)
@@ -139,7 +143,8 @@ The last **3 releases** are kept for instant rollback. Older ones are deleted af
 | `releases` | app, id, git_sha, subject, branch, subdir, zig_version, run (JSON argv), health_path, created_at (only kept releases) |
 | `app_state` | app, desired_state (running/stopped) |
 | `backups` | id, app (`_dootd` = dootd.db), kind, status (running/ok/failed), object_key, local_path, size, sha256, files, release_id, error, created_at, finished_at |
-| `certs` | hostname, cf_cert_id, not_after |
+| `edge_certs` | hostname, zone_id, cf_cert_id, not_after, issued_at |
+| `edge_zones` | zone_id, name, ssl_mode, aop_cert_id, aop_cert_serial, aop_active, checked_at |
 | `metrics_1m` | scope (`_host`, `_dootd` or app), ts (minute), cpu, mem, mem_limit, swap, load1, disk_used, disk_total, pids, io_read, io_write, req, req_5xx (per minute), p50, p95 (ms, NULL = no requests), oom |
 | `schema_migrations` | version |
 
@@ -147,30 +152,37 @@ The last **3 releases** are kept for instant rollback. Older ones are deleted af
 
 ## 8. Bootstrap and install
 
-1. `install.sh` (the only step that needs SSH):
-   - Checks Ubuntu ≥ 24.04, systemd, cgroup v2, and the CPU architecture.
-   - Downloads `dootd-linux-<arch>` from GitHub Releases and verifies its SHA-256 against `checksums.txt`.
-   - Runs `apt-get install -y make`. That is the only system package.
-   - Creates `/etc/dootd` and `/var/lib/dootd`, generates `master.key`, and installs the systemd unit.
+1. `install.sh` (the only step that needs SSH, together with `dootd init`):
+   - Checks Ubuntu ≥ 24.04, systemd, cgroup v2 and the CPU architecture, and changes nothing if one is missing.
+   - Downloads `dootd-linux-<arch>` from GitHub Releases, verifies its SHA-256 against `checksums.txt`, checks that it runs (`version`) and installs it to `/usr/local/bin/dootd`. On a mismatch nothing is installed.
+   - Runs `apt-get install -y make` if `make` is missing. That is the only system package.
+   - Runs `dootd setup-host`: creates `/etc/dootd` (0700) and `/var/lib/dootd` (0711), generates `master.key` (never overwritten), writes the systemd unit that is embedded in the binary (`contrib/systemd/dootd.service`, so the installed unit and the repo can't drift apart) and enables it without starting it.
    - Offers to create a 2 GB swapfile if there is no swap, because Zig builds can use a lot of memory.
-   - Offers to enable `ufw` allowing only the detected SSH port and 443.
-2. `dootd init` (interactive, in the same session) asks for:
+   - Offers to enable `ufw` allowing only the SSH port (from `sshd -T`) and 443.
+   - Questions go to `/dev/tty` (so `curl | sudo bash` works). `DOOTD_SWAP` / `DOOTD_UFW` answer them in advance; without a terminal both are skipped.
+2. `dootd init` (in the same session) asks for:
    - Admin email and password.
    - Dashboard domain, e.g. `dootd.example.com`.
-   - Cloudflare API token. dootd validates it and shows any missing permissions.
-   - Public IPv4/IPv6. These are auto-detected and you confirm them.
+   - Cloudflare API token. dootd verifies it, finds the zone and tries a read with each permission it needs (DNS, SSL and Certificates, Zone Settings), naming any that is missing. If the zone isn't Full (strict), it asks whether to switch it (`--ssl-strict` answers yes).
+   - Public IPv4/IPv6. These are auto-detected and you confirm them. Values that differ from what is detected are written to the config.
 
-   It then creates the proxied DNS record and the Origin CA certificate for the dashboard, sets up AOP for that zone, and starts the service.
+   It stops the service if it runs, writes `config.toml`, stores the admin and the sealed token, and runs one Cloudflare sync for the dashboard: DNS record, Origin CA certificate, AOP (it waits until Cloudflare reports the certificate active). Only then does it enable and (re)start the service. Any failure stops with a message and can be fixed by running `dootd init` again, which asks for confirmation when the server is already set up. Without a terminal every answer must come from flags (`--email`, `--domain`, `--ipv4`, `--ipv6`, `--yes`) and `DOOTD_ADMIN_PASSWORD` / `DOOTD_CLOUDFLARE_TOKEN`.
 3. After that, everything else (GitHub PAT, S3 settings, apps) is configured in the dashboard.
 
-Recovery: `dootd reset-password` over SSH is the only emergency path.
+Recovery: `dootd reset-password` over SSH resets the admin; `dootd init --restore <kit>` rebuilds a lost server (§12.1).
 
 ### systemd unit (essentials)
 
 ```ini
+[Unit]
+StartLimitIntervalSec=0   # never give up; the delay grows to 60 s (RestartSteps)
 [Service]
+ExecStartPre=/bin/sh -c 'if [ -x /usr/local/bin/dootd.prev ]; then /usr/local/bin/dootd.prev update-guard || true; fi'
 ExecStart=/usr/local/bin/dootd serve
 Restart=always
+RestartSec=2s
+RestartSteps=5
+RestartMaxDelaySec=60s
 Delegate=yes              # dootd owns its cgroup subtree
 KillMode=mixed            # SIGTERM to dootd only (it stops apps gracefully); SIGKILL leftovers after the timeout
 TimeoutStopSec=45s
@@ -213,7 +225,6 @@ The IP filter alone only proves the traffic comes from *someone's* Cloudflare ac
 - The proxy sets `X-Forwarded-For` and `X-Real-IP` from `CF-Connecting-IP` (replacing anything the client sent), `X-Forwarded-Proto: https` and `X-Forwarded-Host`, keeps the original `Host`, and flushes responses immediately (streaming/SSE).
 - Timeouts: read header 10 s, idle 120 s, no overall write timeout (so long-polling and WebSockets work). Upstream dial timeout is 5 s.
 - Deploying → 503 "Deploying" (`Retry-After: 3`); starting → 503 "Starting"; stopped/crashed/never deployed → 503 "App not running"; proxy error → 502. Pages carry `X-Dootd-Page` and `Cache-Control: no-store`.
-- The dashboard domain shows a placeholder page until Phase 4.
 - Each request updates in-memory counters per app (count, status class, latency histogram), which are used for metrics.
 
 ### 9.5 Cloudflare API token permissions
@@ -323,7 +334,7 @@ Deploy clicked (Phase 2: `dootd ctl deploy <app>`)
 
 ### 11.3 Control socket (`dootd ctl`)
 - `dootd serve` listens on `/run/dootd/dootd.sock` (0600, root only) with a small HTTP/JSON API: app status, deploy, rollback, start/stop/restart, releases, deployments, build log (follow), app logs (follow), GitHub token.
-- `dootd ctl` is the CLI for it. Until the dashboard exists (Phase 4) it is how apps are deployed; afterwards it stays as the SSH fallback. The dashboard will call the same deployer and supervisor methods directly.
+- `dootd ctl` is the CLI for it: the SSH fallback for everything the dashboard does (it deployed apps before the dashboard existed). The dashboard calls the same deployer and supervisor methods directly. It also serves `GET /v1/version` (the running binary's version) and `GET/POST /v1/update`.
 
 ## 12. Backups
 
@@ -356,9 +367,19 @@ Deploy clicked (Phase 2: `dootd ctl deploy <app>`)
 
 The last 2 `.pre-restore-*` folders are kept.
 
-**dootd's own state**: `dootd.db` is copied with `VACUUM INTO` at startup and then daily, zstd-compressed, kept locally (2) and uploaded to `<prefix>/<host id>/_dootd/` (kept 7 days). Secrets inside it are sealed, so **the master key is needed to use it**. Settings → Backups → *Download recovery kit* (a POST with CSRF token) gives a text file with the master key, host id and bucket location (not the S3 secret). The dashboard asks for it until it has been downloaded once. Restoring a whole server from the kit is Phase 7 work (`dootd init --restore`).
+**dootd's own state**: `dootd.db` is copied with `VACUUM INTO` at startup and then daily, zstd-compressed, kept locally (2) and uploaded to `<prefix>/<host id>/_dootd/` (kept 7 days). Secrets inside it are sealed, so **the master key is needed to use it**. Settings → Backups → *Download recovery kit* (a POST with CSRF token) gives a text file with the master key, host id and bucket location (not the S3 secret). The dashboard asks for it until it has been downloaded once. `dootd ctl backup _dootd` takes a dootd.db backup on demand (e.g. before moving servers).
 
 **Visibility**: the app page lists backups (time, kind, status, size, bucket/server, release, Restore button); the home page shows the last backup time per app, a *backup failed* badge when the latest backup failed or could not be uploaded (a backup whose upload is still being retried does not hide an earlier problem), and warnings when no bucket is set or the recovery kit was never downloaded. Deleting an app keeps its backups unless "Also delete its backups" is ticked.
+
+### 12.1 Rebuilding a server (`dootd init --restore <kit>`)
+On a fresh server after `install.sh`:
+1. Read the kit (master key, host id, dashboard domain, bucket endpoint, region, bucket and prefix). Ask for the S3 access key and secret (`--s3-access-key`, `DOOTD_S3_SECRET`). List `<prefix>/<host id>/_dootd/` before changing anything, so wrong credentials change nothing. Refuse if `dootd.db` already exists.
+2. Install the kit's master key. The unused key `install.sh` generated is renamed to `master.key.replaced-<time>`, never deleted.
+3. Download the newest dootd.db backup, decompress it, `quick_check` it and open it (migrations run if the binary is newer). A test decryption of the stored S3 settings proves the key matches.
+4. Drop what only made sense on the old machine: `releases` rows (the directories are gone), sessions, local backup paths, and the "last dootd.db backup" time (so a fresh one is taken at the first start).
+5. For every app: create its user and directories, download its newest archive, verify it (manifest checksums, `quick_check`) and unpack it into `DATA_DIR` owned by the app user.
+6. Confirm the IPs, write `config.toml`, then sync with Cloudflare for the dashboard and every app domain. DNS points at the new server, new certificates are issued (the old ones are revoked), and a new AOP client certificate is uploaded.
+7. Start dootd and queue a deploy of every app whose desired state was running. The host id stays the same, so backups continue under the same prefix. The old server must be shut down.
 
 ## 13. Monitoring
 
@@ -392,7 +413,7 @@ Email/webhook alerts are on the post-v1 backlog.
 
 - Served only on `edge.dashboard_domain`, through the same Cloudflare-only, AOP-protected edge. Without a dashboard domain (or with the edge off) there is no dashboard; `dootd ctl` still works over SSH.
 - **UI**: server-rendered `html/template` pages and one CSS file, plus ~100 lines of plain JavaScript (`internal/web/static/app.js`) for live logs (Server-Sent Events), refreshing status sections every 5 s and confirmation prompts. Everything embedded with `go:embed`; every action is a normal form POST followed by a redirect, so the dashboard also works without JavaScript (except the live parts).
-- **Admin account**: exactly one user (`users` row id 1). It is created or reset over SSH with `sudo dootd ctl admin set-password --email you@example.com` (alias: `sudo dootd reset-password`); this revokes all sessions (Req 2.6). `dootd init` (Phase 7) will call the same thing.
+- **Admin account**: exactly one user (`users` row id 1). It is created by `dootd init`, or created/reset over SSH with `sudo dootd ctl admin set-password --email you@example.com` (alias: `sudo dootd reset-password`); both revoke all sessions (Req 2.6).
 - **Passwords**: argon2id (64 MiB, t=3, p=1), at least 12 characters. At most 2 hashes run at the same time so a burst of logins can't exhaust a 1 GB VPS. Unknown emails are checked against a dummy hash so timing doesn't reveal the email.
 - **Rate limiting** (in memory): 5 failed sign-ins per client IP (`CF-Connecting-IP`) per 15 minutes → 429. Above 50 failures in 15 minutes overall, sign-ins are additionally limited to one attempt per 2 s, which slows a distributed attack without locking the owner out.
 - **Sessions**: 32-byte random token in the cookie `__Host-dootd` (`Secure; HttpOnly; SameSite=Strict; Path=/`); only its SHA-256 is stored (`sessions`). Expiry: 7 days idle, 30 days total. The account page lists sessions and can sign out all others; a password change does that automatically.
@@ -411,11 +432,12 @@ Email/webhook alerts are on the post-v1 backlog.
 
 ## 15. Self-update
 
-1. Settings → "Check for update" calls the GitHub Releases API for `sumitwaani2/dootd`.
-2. dootd downloads the binary for its architecture and `checksums.txt`, then verifies the SHA-256.
-3. It writes the new binary to `/usr/local/bin/dootd.new`, `fsync`s it and renames it over the old one. The previous binary is kept as `dootd.prev`.
-4. It exits with a special code, and systemd restarts it. Before running any pending DB migrations, the new version saves `dootd.db.pre-update` (a `VACUUM INTO` copy).
-5. If the new version fails to start 3 times, the `ExecStartPre` guard restores `dootd.prev` and `dootd.db.pre-update`. This matters because an older binary refuses to open a schema newer than it knows.
+1. Settings → **Check for updates** (or `dootd ctl update`) calls `GET /repos/sumitwaani2/dootd/releases/latest` (`[update] repo`/`api` in config.toml override it for tests). A tag like `v1.2.3` is newer by semver; prereleases are never "latest"; a development build is always offered the release.
+2. **Update to vX** (or `dootd ctl update --install`) is refused while a deployment runs. dootd downloads `dootd-linux-<arch>` and `checksums.txt`, verifies the SHA-256, writes `dootd.new`, and runs `dootd.new version`, which must report the tag. A mismatch changes nothing.
+3. It hard-links the running binary to `dootd.prev`, deletes any old `dootd.db.pre-update`, writes `update.json` (`from`, `to`, `attempts: 0`, `pending`), and renames `dootd.new` over `dootd`. A second later it shuts down gracefully (apps stop as on any restart), exits, and `Restart=always` starts the new binary.
+4. Before running migrations, every binary that finds pending ones saves `dootd.db.pre-update` (a `VACUUM INTO` copy checked with `quick_check`).
+5. Before every start, systemd runs `dootd.prev update-guard`, which is the previous binary, known to start. While an update is pending it counts attempts. On the 4th start, i.e. after 3 failed starts, it copies `dootd.prev` back over `dootd`, puts `dootd.db.pre-update` back (removing `-wal`/`-shm`), and marks the update `rolled_back`. An older binary refuses a newer schema, so the database copy matters.
+6. A new binary that has run for 20 s marks the update done. The result ("updated from … to …" or the rollback reason) shows on the Settings page and in `dootd ctl update`.
 
 ## 16. Resource budget (targets)
 
@@ -423,7 +445,8 @@ Email/webhook alerts are on the post-v1 backlog.
 |---|---|---|
 | dootd idle RSS | < 30 MB | 28 MB (11 MB anonymous, 18 MB mapped binary pages) |
 | dootd idle CPU | < 1 % (10 s sampling, no busy loops) | 0.03 % |
-| Proxy overhead | < 1 ms p50 added latency | not measured yet (Phase 7 soak test) |
+| Proxy overhead | < 1 ms p50 added latency | not measured yet (soak test on a VPS) |
+| Restart with 6 apps | a few seconds of downtime | measured in the Phase 7 E2E (`systemctl restart` → all apps healthy) |
 | Binary size | < 30 MB | 21 MB (linux/amd64, stripped) |
 
 To stay inside the memory budget dootd sets a soft heap limit of 12 MB (`debug.SetMemoryLimit`), `GOGC=50`, and returns freed memory to the kernel every 2 minutes. Setting `GOMEMLIMIT` or `GOGC` in the unit overrides this. The margin is small: most of the resident memory is the binary's own code pages, which grow with every dependency, so the Phase 6 E2E fails if RSS reaches 30 MB.
@@ -459,3 +482,8 @@ To stay inside the memory budget dootd sets a soft heap limit of 12 MB (`debug.S
 | D25 | Charts are SVG images rendered by dootd | No JS library, works with the strict CSP, cheap to refresh |
 | D26 | Latency percentiles from a fixed histogram | Constant memory per app; bucket-level precision is enough to spot slow apps |
 | D27 | Soft heap limit + periodic FreeOSMemory | Keeps idle RSS under 30 MB without hand-tuning allocations |
+| D28 | The systemd unit is embedded in the binary and installed by `dootd setup-host` | One copy of the unit; `install.sh` stays small and the binary can repair it |
+| D29 | Self-update keeps `dootd.prev`, and the previous binary is the start guard | A broken release cannot guard itself; the last binary that started can |
+| D30 | Copy dootd.db before any migration, not only during updates | A rollback always has a schema the old binary can open; cheap for a small database |
+| D31 | `dootd init --restore` rebuilds from the bucket and redeploys from git instead of copying releases | Backups stay small (databases only), and builds are reproducible from the pinned Zig |
+| D32 | `init` and `init --restore` can run without a terminal (flags + environment variables) | The same code path is tested end to end on CI and can be scripted |
