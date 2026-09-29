@@ -102,32 +102,6 @@ func create(path string) error {
 	return write(path, key)
 }
 
-// ErrKeyMismatch means a different master key is already installed.
-var ErrKeyMismatch = errors.New("secrets: a different master key already exists")
-
-// Install writes a known key (64 hex characters, e.g. from a recovery kit)
-// to path. If the file already holds the same key it succeeds; a different
-// key is never overwritten (ErrKeyMismatch).
-func Install(path, hexKey string) (*Box, error) {
-	hexKey = strings.ToLower(strings.TrimSpace(hexKey))
-	key, err := hex.DecodeString(hexKey)
-	if err != nil || len(key) != keySize {
-		return nil, ErrInvalidKey
-	}
-	if cur, err := os.ReadFile(path); err == nil {
-		if strings.TrimSpace(string(cur)) != hexKey {
-			return nil, fmt.Errorf("%w at %s", ErrKeyMismatch, path)
-		}
-		return Load(path)
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return nil, fmt.Errorf("secrets: read master key: %w", err)
-	}
-	if err := write(path, key); err != nil {
-		return nil, err
-	}
-	return Load(path)
-}
-
 func write(path string, key []byte) error {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {

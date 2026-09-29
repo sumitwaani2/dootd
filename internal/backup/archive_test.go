@@ -126,10 +126,10 @@ func FuzzExtractArchive(f *testing.F) {
 
 func TestNewest(t *testing.T) {
 	objs := []s3.Object{
-		{Key: "p/h/web/20260101T000000Z-scheduled-1.tar.zst"},
-		{Key: "p/h/web/20260103T000000Z-manual-9.tar.zst"},
-		{Key: "p/h/web/20260102T000000Z-pre-deploy-5.tar.zst"},
-		{Key: "p/h/web/notes.txt", LastModified: time.Now()},
+		{Key: "web/20260101T000000Z-scheduled-1.tar.zst"},
+		{Key: "web/20260103T000000Z-manual-9.tar.zst"},
+		{Key: "web/20260102T000000Z-pre-deploy-5.tar.zst"},
+		{Key: "web/notes.txt", LastModified: time.Now()},
 	}
 	o, ok := Newest(objs)
 	if !ok || !strings.Contains(o.Key, "20260103") {
@@ -138,8 +138,28 @@ func TestNewest(t *testing.T) {
 	if _, ok := Newest(nil); ok {
 		t.Fatal("empty list")
 	}
-	if KeyPrefix("dootd", "abc", "web") != "dootd/abc/web/" {
-		t.Fatal("KeyPrefix")
+	if Folder("web") != "web/" {
+		t.Fatal("Folder")
+	}
+}
+
+func TestExpired(t *testing.T) {
+	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	cutoff := now.Add(-48 * time.Hour)
+	objs := []s3.Object{
+		{Key: "web/20260929T090000Z-scheduled-4.tar.zst"}, // 3 h old
+		{Key: "web/20260926T090000Z-scheduled-1.tar.zst"}, // 3 days old
+		{Key: "web/20260927T120000Z-manual-2.tar.zst"},    // exactly 48 h: kept
+		{Key: "web/20260925T090000Z-scheduled-0.tar.zst"}, // 4 days old
+	}
+	got := Expired(objs, cutoff)
+	if len(got) != 2 || !strings.Contains(got[0].Key, "-1.") || !strings.Contains(got[1].Key, "-0.") {
+		t.Fatalf("got %v", got)
+	}
+	// The newest backup is kept however old it is.
+	old := []s3.Object{{Key: "web/20250101T000000Z-scheduled-1.tar.zst"}, {Key: "web/20240101T000000Z-scheduled-0.tar.zst"}}
+	if got := Expired(old, cutoff); len(got) != 1 || !strings.Contains(got[0].Key, "2024") {
+		t.Fatalf("newest must be kept: %v", got)
 	}
 }
 

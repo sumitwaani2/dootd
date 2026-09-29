@@ -1,0 +1,7 @@
+{{define "content"}}
+<section class="card narrow">
+  <h1>{{.Data.Heading}}</h1>
+  <p>{{.Data.Message}}</p>
+  {{with .Data.Link}}<p><a class="button primary" href="{{.}}">{{.}}</a></p>{{end}}
+</section>
+{{end}}

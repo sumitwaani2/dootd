@@ -90,20 +90,23 @@ func (f *IPFilter) Allowed(addr netip.Addr) bool {
 // Rejected is the number of connections closed by the filter.
 func (f *IPFilter) Rejected() int64 { return f.rejected.Load() }
 
-// filteredListener closes non-Cloudflare connections before any TLS work.
+// filteredListener closes non-Cloudflare connections before any TLS work,
+// except while setupOpen reports true: then they are let through as
+// setup connections (docs/architecture.md §8.1).
 type filteredListener struct {
 	net.Listener
-	f   *IPFilter
-	log *slog.Logger
+	f         *IPFilter
+	log       *slog.Logger
+	setupOpen func() bool
 
 	mu       sync.Mutex
 	lastLog  time.Time
 	sinceLog int64
 }
 
-// Listen wraps ln with the filter.
-func (f *IPFilter) Listen(ln net.Listener, log *slog.Logger) net.Listener {
-	return &filteredListener{Listener: ln, f: f, log: log}
+// Listen wraps ln with the filter. setupOpen may be nil (never open).
+func (f *IPFilter) Listen(ln net.Listener, log *slog.Logger, setupOpen func() bool) net.Listener {
+	return &filteredListener{Listener: ln, f: f, log: log, setupOpen: setupOpen}
 }
 
 func (l *filteredListener) Accept() (net.Conn, error) {
@@ -115,6 +118,9 @@ func (l *filteredListener) Accept() (net.Conn, error) {
 		ap, err := netip.ParseAddrPort(c.RemoteAddr().String())
 		if err == nil && l.f.Allowed(ap.Addr()) {
 			return c, nil
+		}
+		if err == nil && l.setupOpen != nil && l.setupOpen() {
+			return &setupConn{Conn: c}, nil
 		}
 		c.Close()
 		l.f.rejected.Add(1)

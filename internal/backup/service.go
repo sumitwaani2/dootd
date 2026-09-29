@@ -2,9 +2,7 @@ package backup
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +20,7 @@ import (
 	"github.com/sumitwaani2/dootd/internal/s3"
 	"github.com/sumitwaani2/dootd/internal/secrets"
 	"github.com/sumitwaani2/dootd/internal/store"
+	"github.com/sumitwaani2/dootd/internal/testenv"
 )
 
 // Kinds.
@@ -39,26 +38,19 @@ const (
 	StatusFailed  = "failed"
 )
 
-// SelfApp is the pseudo app name for dootd.db backups.
-const SelfApp = "_dootd"
-
-// Default policy (docs/architecture.md §12); see Service.Interval/Retention.
+// Policy (docs/architecture.md §12). It is fixed; only the end-to-end
+// tests shorten it (internal/testenv).
 const (
-	DefaultInterval  = 3 * time.Hour
-	DefaultRetention = 48 * time.Hour
-	SelfInterval     = 24 * time.Hour
-	SelfRetention    = 7 * 24 * time.Hour
-	KeepLocal        = 2
-	uploadAttempts   = 3
+	Interval       = 3 * time.Hour
+	Retention      = 48 * time.Hour
+	KeepLocal      = 2
+	uploadAttempts = 3
 )
 
 // Settings keys.
 const (
 	SettingS3        = "s3_config"
 	purposeS3        = "settings:s3"
-	SettingHostID    = "host_id"
-	SettingKitSaved  = "recovery_kit_downloaded_at"
-	settingSelfLast  = "dootd_db_backup_at"
 	uploadRetryDelay = 3 * time.Second
 	uploadPending    = "upload pending"
 )
@@ -88,7 +80,7 @@ func (b Backup) Uploaded() bool { return b.ObjectKey != "" }
 
 // Restorable reports whether a copy is available.
 func (b Backup) Restorable() bool {
-	return b.Status == StatusOK && b.App != SelfApp && (b.ObjectKey != "" || b.LocalPath != "")
+	return b.Status == StatusOK && (b.ObjectKey != "" || b.LocalPath != "")
 }
 
 // Hooks are the app operations the service needs (implemented in serve).
@@ -115,16 +107,9 @@ type Service struct {
 	Box    *secrets.Box
 	Log    *slog.Logger
 	Hooks  Hooks
-	// SelfSnapshot writes a consistent copy of dootd.db to the given path.
-	SelfSnapshot func(ctx context.Context, dst string) error
-	// Interval between scheduled backups and how long they are kept
-	// (zero = defaults).
-	Interval  time.Duration
-	Retention time.Duration
 
 	mu      sync.Mutex // one backup/restore at a time
 	uploads sync.WaitGroup
-	hostID  string
 }
 
 func (s *Service) stagingDir() string { return filepath.Join(s.Layout.Root, "backups", "staging") }
@@ -132,7 +117,7 @@ func (s *Service) localDir(app string) string {
 	return filepath.Join(s.Layout.Root, "backups", "local", app)
 }
 
-// Init prepares directories, the host id, and marks interrupted backups.
+// Init prepares directories and marks interrupted backups.
 func (s *Service) Init(ctx context.Context) error {
 	for _, d := range []string{filepath.Join(s.Layout.Root, "backups"), s.stagingDir(), filepath.Join(s.Layout.Root, "backups", "local")} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
@@ -143,20 +128,7 @@ func (s *Service) Init(ctx context.Context) error {
 	for _, e := range entries {
 		os.RemoveAll(filepath.Join(s.stagingDir(), e.Name()))
 	}
-	v, ok, err := s.Store.GetSetting(ctx, SettingHostID)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		b := make([]byte, 6)
-		rand.Read(b)
-		v = []byte(hex.EncodeToString(b))
-		if err := s.Store.SetSetting(ctx, SettingHostID, v); err != nil {
-			return err
-		}
-	}
-	s.hostID = string(v)
-	_, err = s.Store.Writer().ExecContext(ctx, `UPDATE backups SET status = ?, error = 'interrupted: dootd restarted', finished_at = ?
+	_, err := s.Store.Writer().ExecContext(ctx, `UPDATE backups SET status = ?, error = 'interrupted: dootd restarted', finished_at = ?
 		WHERE status = ?`, StatusFailed, time.Now().Unix(), StatusRunning)
 	return err
 }
@@ -190,25 +162,11 @@ func (s *Service) UploadPending(ctx context.Context) {
 	}
 }
 
-func (s *Service) interval() time.Duration {
-	if s.Interval > 0 {
-		return s.Interval
-	}
-	return DefaultInterval
-}
-
-func (s *Service) retention() time.Duration {
-	if s.Retention > 0 {
-		return s.Retention
-	}
-	return DefaultRetention
-}
+func (s *Service) interval() time.Duration  { return testenv.BackupInterval(Interval) }
+func (s *Service) retention() time.Duration { return testenv.BackupRetention(Retention) }
 
 // Policy returns the schedule interval and retention.
 func (s *Service) Policy() (time.Duration, time.Duration) { return s.interval(), s.retention() }
-
-// HostID identifies this server in object keys.
-func (s *Service) HostID() string { return s.hostID }
 
 // ---------------------------------------------------------------- S3 config
 
@@ -246,7 +204,7 @@ func (s *Service) SetS3Config(ctx context.Context, c s3.Config) error {
 	}
 	tctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	if err := cl.Test(tctx, c.Prefix); err != nil {
+	if err := cl.Test(tctx); err != nil {
 		return err
 	}
 	b, _ := json.Marshal(c)
@@ -272,9 +230,9 @@ func (s *Service) client(ctx context.Context) (*s3.Client, s3.Config, bool, erro
 	return cl, c, err == nil, err
 }
 
-func (s *Service) keyPrefix(c s3.Config, app string) string {
-	return KeyPrefix(c.Prefix, s.hostID, app)
-}
+// Folder is where the backups of app live in the bucket: one folder per
+// app at the bucket root (docs/architecture.md §12).
+func Folder(app string) string { return app + "/" }
 
 // ---------------------------------------------------------------- rows
 
@@ -459,7 +417,7 @@ func (s *Service) run(ctx context.Context, app, kind string, wait bool, lg *logs
 // upload sends the archive to the bucket with retries, then applies
 // retention. Without S3 settings the backup stays local only.
 func (s *Service) upload(ctx context.Context, id int64, app, local, name string, lg *logs.Log) {
-	cl, c, ok, err := s.client(ctx)
+	cl, _, ok, err := s.client(ctx)
 	if err != nil {
 		s.exec(`UPDATE backups SET error = ? WHERE id = ?`, err.Error(), id)
 		return
@@ -469,7 +427,7 @@ func (s *Service) upload(ctx context.Context, id int64, app, local, name string,
 		return
 	}
 	s.exec(`UPDATE backups SET error = ? WHERE id = ?`, uploadPending, id)
-	key := s.keyPrefix(c, app) + name
+	key := Folder(app) + name
 	for attempt := 1; ; attempt++ {
 		err = cl.PutFile(ctx, key, local, "application/zstd")
 		if err == nil || attempt == uploadAttempts || ctx.Err() != nil {
@@ -486,29 +444,21 @@ func (s *Service) upload(ctx context.Context, id int64, app, local, name string,
 	s.exec(`UPDATE backups SET object_key = ?, error = '' WHERE id = ?`, key, id)
 	note(lg, "backup #%d uploaded to %s", id, key)
 	s.Log.Info("backup uploaded", "app", app, "id", id, "key", key)
-	keep := s.retention()
-	if app == SelfApp {
-		keep = SelfRetention
-	}
-	if err := s.retain(ctx, cl, c, app, keep); err != nil {
+	if err := s.retain(ctx, cl, app, s.retention()); err != nil {
 		s.Log.Warn("backup retention", "app", app, "err", err)
 	}
 }
 
 // retain deletes bucket objects of app older than keep, always keeping
 // the newest one, and forgets rows that no longer have any copy.
-func (s *Service) retain(ctx context.Context, cl *s3.Client, c s3.Config, app string, keep time.Duration) error {
-	objs, err := cl.List(ctx, s.keyPrefix(c, app))
+func (s *Service) retain(ctx context.Context, cl *s3.Client, app string, keep time.Duration) error {
+	objs, err := cl.List(ctx, Folder(app))
 	if err != nil {
 		return err
 	}
-	sort.Slice(objs, func(i, j int) bool { return objTime(objs[i]).After(objTime(objs[j])) })
 	cutoff := time.Now().Add(-keep)
 	var errs []error
-	for i, o := range objs {
-		if i == 0 || !objTime(o).Before(cutoff) {
-			continue
-		}
+	for _, o := range Expired(objs, cutoff) {
 		if err := cl.Delete(ctx, o.Key); err != nil {
 			errs = append(errs, err)
 			continue
@@ -517,6 +467,19 @@ func (s *Service) retain(ctx context.Context, cl *s3.Client, c s3.Config, app st
 	}
 	s.forgetEmpty(app, cutoff)
 	return errors.Join(errs...)
+}
+
+// Expired returns the objects older than cutoff, never the newest one.
+func Expired(objs []s3.Object, cutoff time.Time) []s3.Object {
+	objs = append([]s3.Object(nil), objs...)
+	sort.Slice(objs, func(i, j int) bool { return objTime(objs[i]).After(objTime(objs[j])) })
+	var out []s3.Object
+	for i, o := range objs {
+		if i > 0 && objTime(o).Before(cutoff) {
+			out = append(out, o)
+		}
+	}
+	return out
 }
 
 // objTime is the backup time from the key name (falls back to LastModified).
@@ -573,9 +536,7 @@ func (s *Service) pruneLocal(app string) {
 		os.Remove(p)
 		s.exec(`UPDATE backups SET local_path = '' WHERE local_path = ?`, p)
 	}
-	if app != SelfApp {
-		s.forgetEmpty(app, time.Now().Add(-s.retention()))
-	}
+	s.forgetEmpty(app, time.Now().Add(-s.retention()))
 }
 
 // Wait blocks until background uploads finish (shutdown, tests).
@@ -586,10 +547,10 @@ func (s *Service) DeleteAll(ctx context.Context, app string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var errs []error
-	if cl, c, ok, err := s.client(ctx); err != nil {
+	if cl, _, ok, err := s.client(ctx); err != nil {
 		errs = append(errs, err)
 	} else if ok {
-		objs, err := cl.List(ctx, s.keyPrefix(c, app))
+		objs, err := cl.List(ctx, Folder(app))
 		if err != nil {
 			errs = append(errs, err)
 		}
@@ -613,12 +574,10 @@ func (s *Service) DeleteAll(ctx context.Context, app string) error {
 // nextSlot is the next multiple of every (UTC) after t.
 func nextSlot(t time.Time, every time.Duration) time.Time { return t.UTC().Truncate(every).Add(every) }
 
-// Schedule runs the 3-hourly app backups and the daily dootd.db backup
-// until ctx ends.
+// Schedule runs the 3-hourly app backups until ctx ends.
 func (s *Service) Schedule(ctx context.Context) {
 	go func() {
 		s.UploadPending(ctx)
-		s.maybeSelf(ctx)
 		for {
 			next := nextSlot(time.Now(), s.interval())
 			s.Log.Info("next scheduled backup", "at", next.Format(time.RFC3339))
@@ -628,7 +587,6 @@ func (s *Service) Schedule(ctx context.Context) {
 			case <-time.After(time.Until(next)):
 			}
 			s.RunAll(ctx, KindScheduled)
-			s.maybeSelf(ctx)
 			s.UploadPending(ctx)
 		}
 	}()
@@ -644,60 +602,6 @@ func (s *Service) RunAll(ctx context.Context, kind string) {
 			s.Log.Warn("scheduled backup failed", "app", app, "err", err)
 		}
 	}
-}
-
-func (s *Service) maybeSelf(ctx context.Context) {
-	v, ok, _ := s.Store.GetSetting(ctx, settingSelfLast)
-	if ok {
-		if t, err := time.Parse(time.RFC3339, string(v)); err == nil && time.Since(t) < SelfInterval-10*time.Minute {
-			return
-		}
-	}
-	if _, err := s.BackupSelf(ctx); err != nil {
-		s.Log.Warn("dootd.db backup failed", "err", err)
-	}
-}
-
-// BackupSelf backs up dootd.db (zstd-compressed). Secrets inside it stay
-// sealed, so the master key (recovery kit) is needed to use it.
-func (s *Service) BackupSelf(ctx context.Context) (Backup, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	id, err := s.insert(ctx, SelfApp, KindScheduled, "")
-	if err != nil {
-		return Backup{}, err
-	}
-	fail := func(err error) (Backup, error) {
-		s.exec(`UPDATE backups SET status = ?, error = ?, finished_at = ? WHERE id = ?`, StatusFailed, err.Error(), time.Now().Unix(), id)
-		return Backup{}, err
-	}
-	work, err := os.MkdirTemp(s.stagingDir(), "self-")
-	if err != nil {
-		return fail(err)
-	}
-	defer os.RemoveAll(work)
-	snap := filepath.Join(work, "dootd.db")
-	if err := s.SelfSnapshot(ctx, snap); err != nil {
-		return fail(err)
-	}
-	if err := QuickCheck(ctx, snap); err != nil {
-		return fail(err)
-	}
-	now := time.Now()
-	name := fmt.Sprintf("%s-%d-dootd.db.zst", now.UTC().Format("20060102T150405Z"), id)
-	os.MkdirAll(s.localDir(SelfApp), 0o700)
-	local := filepath.Join(s.localDir(SelfApp), name)
-	sum, size, err := compressFile(snap, local)
-	if err != nil {
-		return fail(err)
-	}
-	s.exec(`UPDATE backups SET status = ?, local_path = ?, size = ?, sha256 = ?, files = 1, finished_at = ? WHERE id = ?`,
-		StatusOK, local, size, sum, time.Now().Unix(), id)
-	s.Store.SetSetting(ctx, settingSelfLast, []byte(now.UTC().Format(time.RFC3339)))
-	s.pruneLocal(SelfApp)
-	s.upload(ctx, id, SelfApp, local, name, nil)
-	s.Log.Info("dootd.db backed up", "id", id, "bytes", size)
-	return s.Get(ctx, id)
 }
 
 func human(n int64) string {

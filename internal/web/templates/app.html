@@ -6,7 +6,7 @@
   <div class="row">
     <h1>{{.Name}} {{template "state" .Status.State}}</h1>
     <div class="actions">
-      {{if not .Static}}<form method="post" action="/apps/{{.Name}}/deploy" class="inline">{{template "csrf" $csrf}}<button class="primary" {{if .Pending}}disabled{{end}}>Deploy</button></form>{{end}}
+      <form method="post" action="/apps/{{.Name}}/deploy" class="inline">{{template "csrf" $csrf}}<button class="primary" {{if .Pending}}disabled{{end}}>Deploy</button></form>
       {{if eq .Status.State "stopped" "crashed"}}
       <form method="post" action="/apps/{{.Name}}/start" class="inline">{{template "csrf" $csrf}}<button>Start</button></form>
       {{else}}
@@ -19,12 +19,11 @@
   {{if .Pending}}<p class="info">Deployment <a href="/deployments/{{.Pending}}">#{{.Pending}}</a> is in progress.</p>{{end}}
   {{if .NeedsRestart}}<p class="warn">Settings or env vars changed since the app started. Restart it to apply them.</p>{{end}}
   {{if eq .Status.State "crashed"}}<p class="error">Crashed and not being restarted: {{.Status.LastError}}</p>{{end}}
-  {{if .Static}}<p class="muted">This app comes from the test-only <code>--dev-apps</code> file and can only be started, stopped and restarted here.</p>{{end}}
   <dl class="facts">
     <dt>Domain</dt><dd>{{if .Domain}}<a href="https://{{.Domain}}/" target="_blank" rel="noopener">{{.Domain}}</a>{{else}}-{{end}}
       {{with $.Data.EdgeHost}}<small class="muted">· DNS {{.DNS}} · certificate until {{date .CertUntil}}</small>{{if .Error}}<br><span class="error-text">{{.Error}}</span>{{end}}{{end}}</dd>
     <dt>Release</dt><dd><code>{{if .Status.Release}}{{.Status.Release}}{{else}}not deployed yet{{end}}</code></dd>
-    {{if not .Static}}<dt>Source</dt><dd>{{.Repo}} <code>{{.Branch}}</code>{{if .Path}} / <code>{{.Path}}</code>{{end}}</dd>{{end}}
+    <dt>Source</dt><dd>{{.Repo}} <code>{{.Branch}}</code></dd>
     <dt>Process</dt><dd>{{if .Status.PID}}pid {{.Status.PID}}, healthy {{ago .Status.HealthyAt}}{{else}}-{{end}} · port {{.Port}}</dd>
     <dt>Usage</dt><dd>{{bytes .MemBytes}} of {{bytes .Limits.MemoryMax}} · {{.Requests}} requests{{if .Requests5xx}} ({{.Requests5xx}} 5xx){{end}}</dd>
     <dt>Restarts</dt><dd>{{.Status.Restarts}}{{if .Status.OOMKills}} · <span class="error-text">{{.Status.OOMKills}} out-of-memory kills</span>{{end}}{{with .Status.LastExit}} · last exit: {{.}}{{end}}</dd>
@@ -38,7 +37,6 @@
   <div class="charts" data-refresh="10" id="app-charts">{{range $.Data.Charts}}<figure><figcaption>{{.Title}}</figcaption><img src="{{.URL}}" alt="{{.Title}} chart" width="640" height="180"></figure>{{end}}</div>
 </section>
 
-{{if not .Static}}
 <section class="card">
   <h2>Releases</h2>
   {{with $.Data.Releases}}
@@ -79,7 +77,7 @@
     <form method="post" action="/apps/{{.Name}}/backup" class="inline">{{template "csrf" $csrf}}<button>Back up now</button></form>
   </div>
   {{with .BackupProblem}}<p class="error">{{.}}</p>{{end}}
-  <p class="muted">SQLite files in DATA_DIR are backed up {{$.Data.Policy}} (the newest is always kept). The last 2 are also kept on this server.{{if not $.Data.S3Set}} <b>No bucket is configured</b>, so they are only on this server.{{end}}</p>
+  <p class="muted">SQLite files in DATA_DIR are backed up {{$.Data.Policy}} (the newest is always kept), to the bucket folder <code>{{.Name}}/</code>. The last 2 are also kept on this server.{{if not $.Data.S3Set}} <b>No bucket is configured</b>, so they are only on this server.{{end}}</p>
   {{with $.Data.Backups}}
   <table>
     <thead><tr><th>#</th><th>Taken</th><th>Kind</th><th>Status</th><th>Size</th><th>Where</th><th>Release</th><th></th></tr></thead>
@@ -119,9 +117,8 @@
   {{with $.Data.Edit}}
   <form method="post" action="/apps/{{$.Data.App.Name}}/settings" class="grid">
     {{template "csrf" $csrf}}
-    <label class="wide">GitHub repository <input name="repo" value="{{.Repo}}" required></label>
+    <label class="wide">GitHub repository <input name="repo" value="{{.Repo}}" required><small>Must keep the name {{$.Data.App.Name}} (the app is named after it)</small></label>
     <label>Branch <input name="branch" value="{{.Branch}}" required></label>
-    <label>Path in repo <input name="path" value="{{.Path}}" placeholder="(repository root)"></label>
     <label class="wide">Domain <input name="domain" value="{{.Domain}}" placeholder="(none)"></label>
     <fieldset class="wide">
       <legend>Limits</legend>
@@ -147,6 +144,5 @@
     <div class="wide"><button class="danger">Delete {{.Name}}</button></div>
   </form>
 </section>
-{{end}}
 {{end}}
 {{end}}

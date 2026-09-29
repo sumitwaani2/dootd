@@ -114,27 +114,3 @@ func TestLoadRejects(t *testing.T) {
 		t.Error("existing file was modified")
 	}
 }
-
-func TestInstall(t *testing.T) {
-	b, p := newKey(t)
-	raw, _ := os.ReadFile(p)
-	ct, _ := b.Seal([]byte("v"), "p")
-
-	dst := filepath.Join(t.TempDir(), "master.key")
-	b2, err := Install(dst, strings.ToUpper(string(raw)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if pt, err := b2.Open(ct, "p"); err != nil || string(pt) != "v" {
-		t.Fatalf("installed key does not open: %v", err)
-	}
-	if _, err := Install(dst, string(raw)); err != nil {
-		t.Fatalf("same key again: %v", err)
-	}
-	if _, err := Install(dst, strings.Repeat("11", 32)); !errors.Is(err, ErrKeyMismatch) {
-		t.Fatalf("different key: %v", err)
-	}
-	if _, err := Install(filepath.Join(t.TempDir(), "k"), "nope"); !errors.Is(err, ErrInvalidKey) {
-		t.Fatalf("invalid: %v", err)
-	}
-}

@@ -32,11 +32,25 @@ func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	data := map[string]any{"Next": safeNext(r.URL.Query().Get("next"))}
+	s.render(w, r, http.StatusOK, "login", "Sign in", "", s.loginData(r, map[string]any{"Next": safeNext(r.URL.Query().Get("next"))}))
+}
+
+// loginData adds what the sign-in page needs to know about the setup state.
+func (s *Server) loginData(r *http.Request, data map[string]any) map[string]any {
 	if _, err := s.Auth.Admin(r.Context()); errors.Is(err, auth.ErrNoAdmin) {
-		data["NoAdmin"] = err.Error()
+		data["NoAdmin"] = true
 	}
-	s.render(w, r, http.StatusOK, "login", "Sign in", "", data)
+	data["SetupPending"] = s.Auth.SetupUnused()
+	data["OneTimeOnly"] = s.oneTimeOnly(r)
+	data["Dashboard"] = s.Edge.DashboardHost()
+	return data
+}
+
+// oneTimeOnly: on the setup address, once the dashboard domain works, only
+// the one-time password is accepted (the admin password never travels
+// outside Cloudflare).
+func (s *Server) oneTimeOnly(r *http.Request) bool {
+	return edge.IsDirect(r) && s.Edge.DashboardReady()
 }
 
 // safeNext only allows local absolute paths as redirect targets.
@@ -48,24 +62,56 @@ func safeNext(n string) string {
 }
 
 func (s *Server) loginSubmit(w http.ResponseWriter, r *http.Request) {
-	email, next := r.FormValue("email"), safeNext(r.FormValue("next"))
-	tok, err := s.Auth.Login(r.Context(), email, r.FormValue("password"), edge.ClientIP(r), r.UserAgent())
+	email, next := strings.TrimSpace(r.FormValue("email")), safeNext(r.FormValue("next"))
+	ip := edge.ClientIP(r)
+	var tok string
+	var err error
+	oneTime := email == "" || s.oneTimeOnly(r)
+	if oneTime {
+		tok, err = s.Auth.LoginSetup(r.Context(), r.FormValue("password"), ip, r.UserAgent())
+		next = "/setup"
+	} else {
+		tok, err = s.Auth.Login(r.Context(), email, r.FormValue("password"), ip, r.UserAgent())
+	}
 	if err != nil {
 		status := http.StatusUnauthorized
 		if errors.Is(err, auth.ErrRateLimited) {
 			status = http.StatusTooManyRequests
-		} else if !errors.Is(err, auth.ErrInvalidLogin) && !errors.Is(err, auth.ErrNoAdmin) {
+		} else if !errors.Is(err, auth.ErrInvalidLogin) && !errors.Is(err, auth.ErrNoAdmin) && !errors.Is(err, auth.ErrSetupInvalid) {
 			s.Log.Error("login", "err", err)
 			err = errors.New("sign-in failed; see the dootd logs")
 			status = http.StatusInternalServerError
 		}
-		s.Log.Warn("failed sign-in", "ip", edge.ClientIP(r), "reason", err)
-		s.render(w, r, status, "login", "Sign in", "", map[string]any{"Error": err.Error(), "Email": email, "Next": next})
+		s.Log.Warn("failed sign-in", "ip", ip, "one_time", oneTime, "reason", err)
+		s.render(w, r, status, "login", "Sign in", "", s.loginData(r, map[string]any{"Error": err.Error(), "Email": email, "Next": next}))
 		return
 	}
-	s.Log.Info("signed in", "ip", edge.ClientIP(r))
+	s.Log.Info("signed in", "ip", ip, "one_time", oneTime, "setup_address", edge.IsDirect(r))
 	setSessionCookie(w, tok, int(auth.AbsoluteTimeout/time.Second))
 	http.Redirect(w, r, next, http.StatusSeeOther)
+}
+
+func (s *Server) setupPage(w http.ResponseWriter, r *http.Request) {
+	email, _ := s.Auth.Admin(r.Context())
+	s.render(w, r, http.StatusOK, "setup", "Set up your account", "", map[string]any{"Email": email})
+}
+
+func (s *Server) setupSubmit(w http.ResponseWriter, r *http.Request) {
+	email := r.PostFormValue("email")
+	var err error
+	var tok string
+	if r.PostFormValue("password") != r.PostFormValue("confirm") {
+		err = errors.New("the passwords do not match")
+	} else {
+		tok, err = s.Auth.CompleteSetup(r.Context(), session(r), email, r.PostFormValue("password"), edge.ClientIP(r), r.UserAgent())
+	}
+	if err != nil {
+		s.render(w, r, http.StatusUnprocessableEntity, "setup", "Set up your account", "", map[string]any{"Email": email, "Error": err.Error()})
+		return
+	}
+	s.Log.Info("admin account set up", "ip", edge.ClientIP(r))
+	setSessionCookie(w, tok, int(auth.AbsoluteTimeout/time.Second))
+	redirect(w, r, "/", nil, "Your account is set up. Next: Settings → Cloudflare token, then the dashboard domain.")
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
@@ -124,38 +170,37 @@ func (s *Server) appRows(ctx context.Context) ([]AppRow, error) {
 	return rows, nil
 }
 
-func (s *Server) warnings(ctx context.Context, rows []AppRow) []string {
+func (s *Server) warnings(r *http.Request, rows []AppRow) []string {
+	ctx := r.Context()
 	var ws []string
-	if _, ok, _ := s.Store.GetSetting(ctx, deployer.SettingGitHubToken); !ok {
-		ws = append(ws, "No GitHub token is set, so only public repositories can be deployed. Add one in Settings.")
+	st := s.Edge.Status(ctx)
+	if !st.TokenSet {
+		ws = append(ws, "Setup: no Cloudflare token is set, so DNS records and certificates cannot be managed. Add one in Settings → Cloudflare.")
 	}
-	if s.Edge == nil {
-		ws = append(ws, "The edge is disabled (edge.listen = \"off\"); apps are not reachable from the internet.")
-	} else {
-		st := s.Edge.Status(ctx)
-		if !st.TokenSet {
-			ws = append(ws, "No Cloudflare token is set, so DNS records and certificates cannot be managed. Add one in Settings.")
+	switch {
+	case st.Dashboard == "":
+		ws = append(ws, "Setup: no dashboard domain yet, so the dashboard is only reachable on the server's IP address. Set one in Settings → Dashboard domain.")
+	case !s.Edge.DashboardReady():
+		ws = append(ws, "Setup: the dashboard domain "+st.Dashboard+" is being set up (DNS record, certificate, origin pulls). Until it is ready the dashboard also answers on the server's IP address.")
+	case edge.IsDirect(r):
+		ws = append(ws, "You are on the setup address. The dashboard is at https://"+st.Dashboard+"/ and this address stops answering once the one-time password is used or expires.")
+	}
+	for _, z := range st.Zones {
+		if z.Warning != "" {
+			ws = append(ws, z.Name+": "+z.Warning)
 		}
-		for _, z := range st.Zones {
-			if z.Warning != "" {
-				ws = append(ws, z.Name+": "+z.Warning)
-			}
+	}
+	for _, h := range st.Hosts {
+		if h.Error != "" {
+			ws = append(ws, h.Host+": "+h.Error)
 		}
-		for _, h := range st.Hosts {
-			if h.Error != "" {
-				ws = append(ws, h.Host+": "+h.Error)
-			}
-		}
+	}
+	if _, ok, _ := s.Store.GetSetting(ctx, deployer.SettingGitHubToken); !ok {
+		ws = append(ws, "No GitHub token is set, so only public repositories can be deployed. Add one in Settings → GitHub.")
 	}
 	if s.Backups != nil {
 		if _, ok, _ := s.Backups.S3Config(ctx); !ok {
 			ws = append(ws, "No S3 bucket is set, so backups are only kept on this server. Add R2 or another S3-compatible bucket in Settings.")
-		}
-		if _, ok, _ := s.Store.GetSetting(ctx, backup.SettingKitSaved); !ok {
-			ws = append(ws, "Download the recovery kit (Settings → Backups) and keep it somewhere safe: without the master key in it, backups of dootd's own settings cannot be decrypted.")
-		}
-		if p := s.Backups.Problem(ctx, backup.SelfApp); p != "" {
-			ws = append(ws, "dootd.db: "+p)
 		}
 	}
 	ws = append(ws, s.metricWarnings(ctx, rows)...)
@@ -179,7 +224,7 @@ func (s *Server) home(w http.ResponseWriter, r *http.Request) {
 		s.errorPage(w, r, http.StatusInternalServerError, err)
 		return
 	}
-	data := map[string]any{"Apps": rows, "Host": hostinfo.Read(s.Layout.Root), "Warnings": s.warnings(r.Context(), rows)}
+	data := map[string]any{"Apps": rows, "Host": hostinfo.Read(s.Layout.Root), "Warnings": s.warnings(r, rows)}
 	s.render(w, r, http.StatusOK, "home", "Apps", "apps", data)
 }
 
@@ -188,13 +233,15 @@ func (s *Server) home(w http.ResponseWriter, r *http.Request) {
 func formInput(r *http.Request) apps.Input {
 	f := func(k string) string { return r.PostFormValue(k) }
 	return apps.Input{
-		Name: f("name"), Type: f("type"), Repo: f("repo"), Branch: f("branch"), Path: f("path"), Domain: f("domain"),
+		Type: f("type"), Repo: f("repo"), Branch: f("branch"), Domain: f("domain"),
 		Memory: f("memory"), CPU: f("cpu"), Pids: f("pids"), BuildMemory: f("build_memory"), BuildTimeout: f("build_timeout"),
+		RestoreFrom: f("restore_from"),
 	}
 }
 
 func (s *Server) newAppPage(w http.ResponseWriter, r *http.Request) {
-	in := apps.Input{Type: "zig", Branch: "main", Memory: "256M", CPU: "1", Pids: "256", BuildMemory: "1G", BuildTimeout: "15m"}
+	in := apps.Input{Type: "zig", Branch: "main", Memory: "256M", CPU: "1", Pids: "256", BuildMemory: "1G", BuildTimeout: "15m",
+		RestoreFrom: apps.AutoFolder}
 	s.render(w, r, http.StatusOK, "app_new", "Add app", "apps", s.newAppData(r.Context(), in, nil))
 }
 
@@ -202,6 +249,14 @@ func (s *Server) newAppData(ctx context.Context, in apps.Input, err error) map[s
 	d := map[string]any{"In": in}
 	if err != nil {
 		d["Errors"] = strings.Split(err.Error(), "\n")
+	}
+	// Offer the bucket's backup folders (docs/architecture.md §12.1).
+	fctx, fcancel := context.WithTimeout(ctx, 10*time.Second)
+	defer fcancel()
+	folders, ok, ferr := s.Backups.Folders(fctx)
+	d["BucketSet"], d["Folders"] = ok, folders
+	if ferr != nil {
+		d["FoldersErr"] = ferr.Error()
 	}
 	// Offer the token's repositories (best effort, short timeout).
 	if tok, ok := s.githubToken(ctx); ok {
@@ -226,11 +281,18 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 		s.render(w, r, http.StatusUnprocessableEntity, "app_new", "Add app", "apps", s.newAppData(r.Context(), in, err))
 		return
 	}
-	msg := "App created. Add env vars if it needs any, then press Deploy."
-	if a.Domain != "" && s.Edge != nil {
+	msg := "App " + a.Name + " created."
+	switch {
+	case a.RestoreErr != nil:
+		err = fmt.Errorf("app %s created, but its data could not be restored from the backup folder %s/ (the app starts with an empty DATA_DIR): %w", a.Name, a.RestoredFrom, a.RestoreErr)
+	case a.RestoredFrom != "":
+		msg += fmt.Sprintf(" Its data was restored from the newest backup in %s/ (%s).", a.RestoredFrom, strings.Join(a.Restored, ", "))
+	}
+	msg += " Add env vars if it needs any, then press Deploy."
+	if a.Domain != "" {
 		msg += " DNS and the certificate for " + a.Domain + " are being set up in the background."
 	}
-	redirect(w, r, "/apps/"+a.Name, nil, msg)
+	redirect(w, r, "/apps/"+a.Name, err, msg)
 }
 
 func (s *Server) appPage(w http.ResponseWriter, r *http.Request) {
@@ -258,7 +320,7 @@ func (s *Server) appPage(w http.ResponseWriter, r *http.Request) {
 			data["Now"] = p
 		}
 	}
-	if !row.Static {
+	{
 		full, err := s.Apps.Get(r.Context(), name)
 		if err != nil {
 			s.errorPage(w, r, http.StatusInternalServerError, err)
@@ -274,12 +336,12 @@ func (s *Server) appPage(w http.ResponseWriter, r *http.Request) {
 			data["Policy"] = s.policyText()
 		}
 		data["Edit"] = apps.Input{
-			Repo: full.Repo, Branch: full.Branch, Path: full.Path, Domain: full.Domain,
+			Repo: full.Repo, Branch: full.Branch, Domain: full.Domain,
 			Memory: humanLimit(full.Limits.MemoryMax), CPU: strconv.FormatFloat(full.Limits.CPUMax, 'f', -1, 64),
 			Pids: strconv.Itoa(full.Limits.PidsMax), BuildMemory: humanLimit(full.BuildMemory), BuildTimeout: full.BuildTimeout.String(),
 		}
 	}
-	if s.Edge != nil && row.Domain != "" {
+	if row.Domain != "" {
 		for _, h := range s.Edge.Status(r.Context()).Hosts {
 			if h.Host == row.Domain {
 				data["EdgeHost"] = h
@@ -421,9 +483,8 @@ func (s *Server) settingsPage(w http.ResponseWriter, r *http.Request) {
 		login, _, _ := s.Store.GetSetting(ctx, settingGitHubLogin)
 		data["GitHubSet"], data["GitHubLogin"] = true, string(login)
 	}
-	if s.Edge != nil {
-		data["Edge"] = s.Edge.Status(ctx)
-	}
+	data["Edge"] = s.Edge.Status(ctx)
+	data["DashboardReady"] = s.Edge.DashboardReady()
 	tcs, _ := s.Zig.List()
 	pins := map[string][]string{}
 	for _, name := range s.Dep.Apps() {
@@ -449,19 +510,7 @@ func (s *Server) settingsPage(w http.ResponseWriter, r *http.Request) {
 			c.SecretKey = ""
 			data["S3"], data["S3Set"] = c, true
 		}
-		if v, ok, _ := s.Store.GetSetting(ctx, backup.SettingKitSaved); ok {
-			data["KitSaved"] = string(v)
-		}
-		data["HostID"] = s.Backups.HostID()
 		data["Policy"] = s.policyText()
-		self, _ := s.Backups.List(ctx, backup.SelfApp)
-		if len(self) > 5 {
-			self = self[:5]
-		}
-		data["SelfBackups"] = self
-	}
-	if s.Update != nil {
-		data["Update"] = s.Update.Status(ctx)
 	}
 	s.render(w, r, http.StatusOK, "settings", "Settings", "settings", data)
 }
@@ -494,18 +543,7 @@ func (s *Server) setGitHubToken(w http.ResponseWriter, r *http.Request) {
 	redirect(w, r, "/settings", nil, "GitHub token saved (encrypted). It belongs to "+info.Login+".")
 }
 
-func (s *Server) needEdge(w http.ResponseWriter, r *http.Request) bool {
-	if s.Edge == nil {
-		redirect(w, r, "/settings", errors.New(`the edge is disabled (edge.listen = "off")`), "")
-		return false
-	}
-	return true
-}
-
 func (s *Server) setCloudflareToken(w http.ResponseWriter, r *http.Request) {
-	if !s.needEdge(w, r) {
-		return
-	}
 	cctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	zones, err := s.Edge.SetToken(cctx, strings.TrimSpace(r.PostFormValue("token")))
@@ -518,9 +556,6 @@ func (s *Server) setCloudflareToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) edgeSync(w http.ResponseWriter, r *http.Request) {
-	if !s.needEdge(w, r) {
-		return
-	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 	_, err := s.Edge.Sync(ctx)
@@ -528,14 +563,37 @@ func (s *Server) edgeSync(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) sslStrict(w http.ResponseWriter, r *http.Request) {
-	if !s.needEdge(w, r) {
-		return
-	}
 	zone := r.PostFormValue("zone")
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 	err := s.Edge.SetStrict(ctx, zone)
 	redirect(w, r, "/settings", err, zone+": SSL/TLS mode set to Full (strict).")
+}
+
+func (s *Server) setDashboardDomain(w http.ResponseWriter, r *http.Request) {
+	old := s.Edge.DashboardHost()
+	domain := strings.ToLower(strings.TrimSpace(r.PostFormValue("domain")))
+	for _, a := range s.Apps.Routes() {
+		if a.Host == domain {
+			redirect(w, r, "/settings#dashboard-domain", fmt.Errorf("%s is the domain of the app %s", domain, a.App), "")
+			return
+		}
+	}
+	if err := s.Edge.SetDashboardHost(r.Context(), domain); err != nil {
+		redirect(w, r, "/settings#dashboard-domain", fmt.Errorf("dashboard domain not saved: %w", err), "")
+		return
+	}
+	// On the old domain the next page would not be routed to the dashboard
+	// any more, so say where to go instead of redirecting.
+	if !edge.IsDirect(r) && old != "" && old != domain {
+		s.render(w, r, http.StatusOK, "notice", "Dashboard domain changed", "", map[string]any{
+			"Heading": "The dashboard is moving to " + domain,
+			"Message": "The DNS record and certificate are being set up; this usually takes under a minute. Then sign in again there.",
+			"Link":    "https://" + domain + "/",
+		})
+		return
+	}
+	redirect(w, r, "/settings#dashboard-domain", nil, "Dashboard domain "+domain+" saved. DNS record, certificate and origin pulls are being set up; this page shows when it is ready.")
 }
 
 func (s *Server) deleteToolchain(w http.ResponseWriter, r *http.Request) {
@@ -549,6 +607,11 @@ func (s *Server) deleteToolchain(w http.ResponseWriter, r *http.Request) {
 func (s *Server) accountPage(w http.ResponseWriter, r *http.Request) {
 	sessions, _ := s.Auth.Sessions(r.Context(), session(r))
 	s.render(w, r, http.StatusOK, "account", "Account", "account", map[string]any{"Sessions": sessions})
+}
+
+func (s *Server) changeEmail(w http.ResponseWriter, r *http.Request) {
+	err := s.Auth.ChangeEmail(r.Context(), r.PostFormValue("current"), r.PostFormValue("email"), edge.ClientIP(r))
+	redirect(w, r, "/account", err, "Email changed.")
 }
 
 func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {

@@ -5,7 +5,10 @@
   {{with .Data.In}}
   <form method="post" action="/apps" class="grid">
     {{template "csrf" $.CSRF}}
-    <label>Name <input name="name" value="{{.Name}}" required pattern="[a-z][a-z0-9-]{0,22}[a-z0-9]" placeholder="blog"><small>2–24 characters: a–z, 0–9 and -</small></label>
+    <label class="wide">GitHub repository <input name="repo" value="{{.Repo}}" required placeholder="https://github.com/you/blog" list="repos">
+      <small>The app is named after the repository (e.g. <code>my_blog</code> → <code>my-blog</code>). <code>dootd.toml</code> must be at its root.</small></label>
+    {{with $.Data.Repos}}<datalist id="repos">{{range .}}<option value="https://github.com/{{.FullName}}">{{end}}</datalist>{{end}}
+    <label>Branch <input name="branch" value="{{.Branch}}" required></label>
     <label>Type
       <select name="type">
         <option value="zig" {{if eq .Type "zig"}}selected{{end}}>Zig</option>
@@ -13,11 +16,17 @@
       </select>
       <small>Only changes the default build command</small>
     </label>
-    <label class="wide">GitHub repository <input name="repo" value="{{.Repo}}" required placeholder="https://github.com/you/blog" list="repos"></label>
-    {{with $.Data.Repos}}<datalist id="repos">{{range .}}<option value="https://github.com/{{.FullName}}">{{end}}</datalist>{{end}}
-    <label>Branch <input name="branch" value="{{.Branch}}" required></label>
-    <label>Path in repo <input name="path" value="{{.Path}}" placeholder="(repository root)"><small>Folder containing dootd.toml</small></label>
     <label class="wide">Domain <input name="domain" value="{{.Domain}}" placeholder="blog.example.com"><small>DNS record and certificate are created in Cloudflare</small></label>
+    {{if $.Data.BucketSet}}
+    <label class="wide">Start with data from
+      <select name="restore_from">
+        <option value="@auto" {{if eq .RestoreFrom "@auto"}}selected{{end}}>the backup folder with the app's name, if there is one</option>
+        <option value="" {{if eq .RestoreFrom ""}}selected{{end}}>nothing (empty database)</option>
+        {{range $.Data.Folders}}<option value="{{.}}" {{if eq $.Data.In.RestoreFrom .}}selected{{end}}>backup folder {{.}}/ (newest backup)</option>{{end}}
+      </select>
+      <small>The newest backup of the chosen bucket folder is verified and put into the new app's DATA_DIR before the first deploy.{{with $.Data.FoldersErr}} <span class="error-text">Could not list the bucket: {{.}}</span>{{end}}</small>
+    </label>
+    {{end}}
     <fieldset class="wide">
       <legend>Limits</legend>
       <label>Memory <input name="memory" value="{{.Memory}}" size="6"></label>

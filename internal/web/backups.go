@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -89,7 +88,7 @@ func (s *Server) setS3(w http.ResponseWriter, r *http.Request) {
 	}
 	c := s3.Config{
 		Endpoint: r.PostFormValue("endpoint"), Region: r.PostFormValue("region"), Bucket: r.PostFormValue("bucket"),
-		Prefix: r.PostFormValue("prefix"), AccessKey: r.PostFormValue("access_key"), SecretKey: r.PostFormValue("secret_key"),
+		AccessKey: r.PostFormValue("access_key"), SecretKey: r.PostFormValue("secret_key"),
 	}
 	if err := s.Backups.SetS3Config(ctx, c); err != nil {
 		redirect(w, r, "/settings#backups", fmt.Errorf("S3 settings not saved: %w", err), "")
@@ -97,28 +96,4 @@ func (s *Server) setS3(w http.ResponseWriter, r *http.Request) {
 	}
 	go s.Backups.UploadPending(context.WithoutCancel(ctx))
 	redirect(w, r, "/settings#backups", nil, "S3 settings saved (encrypted). A test file was uploaded, read back and deleted. Backups taken so far are being uploaded.")
-}
-
-// recoveryKit downloads the master key and what is needed to find the
-// backups. It is a POST so a cross-site link cannot trigger it.
-func (s *Server) recoveryKit(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	key, err := os.ReadFile(s.MasterKeyPath)
-	if err != nil {
-		redirect(w, r, "/settings#backups", err, "")
-		return
-	}
-	host, _ := os.Hostname()
-	kit := backup.Kit{
-		Created: time.Now(), Server: host, HostID: s.Backups.HostID(), Dashboard: s.Host, Version: s.Version,
-		KeyPath: s.MasterKeyPath, MasterKey: strings.TrimSpace(string(key)),
-	}
-	if c, ok, _ := s.Backups.S3Config(ctx); ok {
-		kit.Endpoint, kit.Region, kit.Bucket, kit.Prefix = c.Endpoint, c.Region, c.Bucket, c.Prefix
-	}
-	s.Store.SetSetting(ctx, backup.SettingKitSaved, []byte(time.Now().UTC().Format(time.RFC3339)))
-	s.Log.Info("recovery kit downloaded", "ip", r.Header.Get("CF-Connecting-IP"))
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="dootd-recovery-kit-%s.txt"`, s.Backups.HostID()))
-	w.Write([]byte(kit.Format()))
 }

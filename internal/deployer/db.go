@@ -48,7 +48,6 @@ type Release struct {
 	GitSHA     string    `json:"git_sha"`
 	Subject    string    `json:"subject"`
 	Branch     string    `json:"branch"`
-	Subdir     string    `json:"subdir"`
 	ZigVersion string    `json:"zig_version"`
 	Run        []string  `json:"run"`
 	HealthPath string    `json:"health_path"`
@@ -149,8 +148,8 @@ func (d *Deployer) insertRelease(ctx context.Context, r Release) error {
 	run, _ := json.Marshal(r.Run)
 	_, err := d.db.Writer().ExecContext(ctx, `INSERT INTO releases
 		(app, id, git_sha, subject, branch, subdir, zig_version, run, health_path, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.App, r.ID, r.GitSHA, r.Subject, r.Branch, r.Subdir, r.ZigVersion, string(run), r.HealthPath, unix(r.CreatedAt))
+		VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, ?)`,
+		r.App, r.ID, r.GitSHA, r.Subject, r.Branch, r.ZigVersion, string(run), r.HealthPath, unix(r.CreatedAt))
 	return err
 }
 
@@ -185,7 +184,7 @@ func (d *Deployer) Releases(ctx context.Context, app string) ([]Release, error) 
 }
 
 func (d *Deployer) queryReleases(ctx context.Context, where string, args ...any) ([]Release, error) {
-	rows, err := d.db.Reader().QueryContext(ctx, `SELECT app, id, git_sha, subject, branch, subdir, zig_version, run, health_path, created_at
+	rows, err := d.db.Reader().QueryContext(ctx, `SELECT app, id, git_sha, subject, branch, zig_version, run, health_path, created_at
 		FROM releases `+where, args...)
 	if err != nil {
 		return nil, err
@@ -196,7 +195,7 @@ func (d *Deployer) queryReleases(ctx context.Context, where string, args ...any)
 		var r Release
 		var run string
 		var created int64
-		if err := rows.Scan(&r.App, &r.ID, &r.GitSHA, &r.Subject, &r.Branch, &r.Subdir, &r.ZigVersion, &run, &r.HealthPath, &created); err != nil {
+		if err := rows.Scan(&r.App, &r.ID, &r.GitSHA, &r.Subject, &r.Branch, &r.ZigVersion, &run, &r.HealthPath, &created); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(run), &r.Run); err != nil {

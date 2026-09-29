@@ -3,15 +3,11 @@ Description=dootd - minimal PaaS for small Zig/C + SQLite apps
 Documentation=https://github.com/sumitwaani2/dootd
 After=network-online.target
 Wants=network-online.target
-# Never give up restarting: a broken update is rolled back by the guard
-# below after 3 failed starts, and the delay grows to at most 60s.
+# Never give up restarting; the delay grows to at most 60s.
 StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-# Self-update fallback (docs/architecture.md §15): the previous binary
-# restores itself and the pre-update database after 3 failed starts.
-ExecStartPre=/bin/sh -c 'if [ -x /usr/local/bin/dootd.prev ]; then /usr/local/bin/dootd.prev update-guard || true; fi'
 ExecStart=/usr/local/bin/dootd serve
 Restart=always
 RestartSec=2s

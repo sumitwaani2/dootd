@@ -13,10 +13,11 @@ import (
 func TestOpenFreshAndReopen(t *testing.T) {
 	ctx := context.Background()
 	p := filepath.Join(t.TempDir(), "dootd.db")
-	cur, latest, err := PendingMigrations(ctx, p)
-	if err != nil || cur != 0 || latest < 6 {
-		t.Fatalf("pending on a missing db: %d %d %v", cur, latest, err)
+	ms, err := loadMigrations(embeddedMigrations)
+	if err != nil {
+		t.Fatal(err)
 	}
+	latest := len(ms)
 	s, err := Open(ctx, p)
 	if err != nil {
 		t.Fatal(err)
@@ -39,10 +40,6 @@ func TestOpenFreshAndReopen(t *testing.T) {
 	}
 	s.Close()
 
-	cur, _, _ = PendingMigrations(ctx, p)
-	if cur != latest {
-		t.Fatalf("pending after migrate: %d", cur)
-	}
 	s, err = Open(ctx, p) // idempotent
 	if err != nil {
 		t.Fatal(err)

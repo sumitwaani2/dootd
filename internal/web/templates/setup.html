@@ -1,0 +1,14 @@
+{{define "content"}}
+<section class="card narrow">
+  <h1>Set up your account</h1>
+  <p>You signed in with the one-time password. Choose the email and password you will sign in with from now on. This signs out every other session.</p>
+  {{with .Data.Error}}<p class="error">{{.}}</p>{{end}}
+  <form method="post" action="/setup">
+    {{template "csrf" .CSRF}}
+    <label>Email <input type="email" name="email" value="{{.Data.Email}}" autocomplete="username" required autofocus></label>
+    <label>Password <input type="password" name="password" autocomplete="new-password" minlength="12" required><small>At least 12 characters</small></label>
+    <label>Repeat password <input type="password" name="confirm" autocomplete="new-password" minlength="12" required></label>
+    <button class="primary">Save and continue</button>
+  </form>
+</section>
+{{end}}

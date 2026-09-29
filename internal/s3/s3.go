@@ -23,7 +23,6 @@ type Config struct {
 	Endpoint  string `json:"endpoint"` // e.g. https://<account>.r2.cloudflarestorage.com
 	Region    string `json:"region"`   // "auto" for R2
 	Bucket    string `json:"bucket"`
-	Prefix    string `json:"prefix"` // key prefix inside the bucket, default "dootd"
 	AccessKey string `json:"access_key"`
 	SecretKey string `json:"secret_key"`
 }
@@ -34,12 +33,8 @@ func (c *Config) Normalize() error {
 	c.Bucket = strings.TrimSpace(c.Bucket)
 	c.Region = strings.TrimSpace(c.Region)
 	c.AccessKey = strings.TrimSpace(c.AccessKey)
-	c.Prefix = strings.Trim(strings.TrimSpace(c.Prefix), "/")
 	if c.Region == "" {
 		c.Region = "auto"
-	}
-	if c.Prefix == "" {
-		c.Prefix = "dootd"
 	}
 	var errs []error
 	u, err := url.Parse(c.Endpoint)
@@ -51,9 +46,6 @@ func (c *Config) Normalize() error {
 	}
 	if c.AccessKey == "" || c.SecretKey == "" {
 		errs = append(errs, errors.New("access key ID and secret access key are required"))
-	}
-	if strings.ContainsAny(c.Prefix, " \\") {
-		errs = append(errs, errors.New("prefix must not contain spaces or backslashes"))
 	}
 	return errors.Join(errs...)
 }
@@ -138,14 +130,29 @@ func (c *Client) List(ctx context.Context, prefix string) ([]Object, error) {
 	return out, nil
 }
 
+// Folders returns the top-level folder names in the bucket, sorted.
+func (c *Client) Folders(ctx context.Context) ([]string, error) {
+	var out []string
+	for o := range c.mc.ListObjects(ctx, c.bucket, minio.ListObjectsOptions{Recursive: false}) {
+		if o.Err != nil {
+			return nil, wrap("list folders", o.Err)
+		}
+		if name, ok := strings.CutSuffix(o.Key, "/"); ok && name != "" {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 // Delete removes one object.
 func (c *Client) Delete(ctx context.Context, key string) error {
 	return wrap("delete "+key, c.mc.RemoveObject(ctx, c.bucket, key, minio.RemoveObjectOptions{}))
 }
 
-// Test uploads, reads back and deletes a small object (Req 6.3).
-func (c *Client) Test(ctx context.Context, prefix string) error {
-	key := strings.Trim(prefix, "/") + "/.dootd-connection-test"
+// Test uploads, reads back and deletes a small object (Req 7.4).
+func (c *Client) Test(ctx context.Context) error {
+	key := ".dootd-connection-test"
 	body := []byte("dootd connection test " + time.Now().UTC().Format(time.RFC3339Nano))
 	if _, err := c.mc.PutObject(ctx, c.bucket, key, bytes.NewReader(body), int64(len(body)), minio.PutObjectOptions{ContentType: "text/plain"}); err != nil {
 		return wrap("test upload", err)

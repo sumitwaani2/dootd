@@ -62,6 +62,15 @@ func ParseRepo(s string) (Repo, error) {
 	}, nil
 }
 
+// RepoName is the repository's name: <repo> for github.com/<owner>/<repo>,
+// and the last path element (without .git) for file:// repositories.
+func (r Repo) RepoName() string {
+	if r.GitHub {
+		return r.Name
+	}
+	return strings.TrimSuffix(filepath.Base(strings.TrimPrefix(r.URL, "file://")), ".git")
+}
+
 // ValidateBranch checks a branch name for safety and basic git rules.
 func ValidateBranch(b string) error {
 	if !branchRe.MatchString(b) || strings.Contains(b, "..") || strings.HasPrefix(b, "/") ||

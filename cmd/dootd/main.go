@@ -1,4 +1,8 @@
 // Command dootd is a minimal single-binary PaaS for small Zig/C + SQLite web apps.
+//
+// It has no admin CLI: install.sh runs `dootd setup-host`, systemd runs
+// `dootd serve`, and everything else happens in the dashboard
+// (docs/architecture.md §8, D33).
 package main
 
 import (
@@ -11,19 +15,14 @@ import (
 
 const usage = `dootd - minimal PaaS for small Zig/C + SQLite web apps
 
-Usage:
-  dootd <command>
+Install or update it with:
+  curl -fsSL https://github.com/sumitwaani2/dootd/releases/latest/download/install.sh | sudo bash
+and manage it in the dashboard. These commands are used by the installer
+and systemd:
 
-Commands:
-  serve            Run the dootd service (normally started by systemd)
-  init             First-time setup: admin, dashboard domain, Cloudflare (run once after install.sh)
-  init --restore   Rebuild a server from a recovery kit and the backup bucket
-  reset-password   Reset the dashboard admin password
-  ctl              Control a running dootd (deploy, rollback, status, logs)
-  update           Check for / install a new dootd release (same as Settings → Updates)
-  setup-host       Create directories, the master key and the systemd unit (used by install.sh)
-  version          Print version information
-  help             Show this help
+  version      Print version information
+  setup-host   Prepare the host, start dootd, print a one-time password (run by install.sh)
+  serve        Run the dootd service (run by systemd)
 `
 
 func main() {
@@ -35,7 +34,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stderr, usage)
 		return 2
 	}
-
 	switch args[0] {
 	case "version", "--version", "-v":
 		fmt.Fprintln(stdout, buildinfo.String())
@@ -44,21 +42,17 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stdout, usage)
 		return 0
 	case "serve":
-		return runServe(args[1:], stderr)
-	case "ctl":
-		return runCtl(args[1:], stdout, stderr)
-	case "reset-password":
-		// Shortcut for: dootd ctl admin set-password [--email E]
-		return runCtl(append([]string{"admin", "set-password"}, args[1:]...), stdout, stderr)
-	case "init":
-		return runInit(args[1:], stdout, stderr)
-	case "update":
-		// Shortcut for: dootd ctl update [--install]
-		return runCtl(append([]string{"update"}, args[1:]...), stdout, stderr)
-	case "update-guard":
-		return runUpdateGuard(args[1:], stdout, stderr)
+		if len(args) > 1 {
+			fmt.Fprint(stderr, usage)
+			return 2
+		}
+		return runServe(stderr)
 	case "setup-host":
-		return runSetupHost(args[1:], stdout, stderr)
+		if len(args) > 1 {
+			fmt.Fprint(stderr, usage)
+			return 2
+		}
+		return runSetupHost(stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "dootd: unknown command %q\n\n%s", args[0], usage)
 		return 2

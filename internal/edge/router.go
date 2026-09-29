@@ -36,15 +36,27 @@ const (
 )
 
 // Router routes by Host header to the dashboard or to app proxies.
+// Requests on setup connections only ever reach the dashboard.
 type Router struct {
-	Dashboard     http.Handler
-	DashboardHost string
+	Dashboard http.Handler
 	// State tells the router whether app can take traffic.
 	State func(app string) Availability
-	Log   *slog.Logger
+	// SetupOpen reports whether the setup address is open.
+	SetupOpen func() bool
+	Log       *slog.Logger
 
-	mu     sync.RWMutex
-	routes map[string]*appProxy
+	dashHost atomic.Value // string
+	mu       sync.RWMutex
+	routes   map[string]*appProxy
+}
+
+// SetDashboardHost changes the dashboard domain ("" = none).
+func (rt *Router) SetDashboardHost(h string) { rt.dashHost.Store(h) }
+
+// DashboardHost is the dashboard domain ("" = none).
+func (rt *Router) DashboardHost() string {
+	h, _ := rt.dashHost.Load().(string)
+	return h
 }
 
 type appProxy struct {
@@ -113,9 +125,10 @@ func (rt *Router) newProxy(r Route) *appProxy {
 }
 
 // ClientIP is the visitor's IP: CF-Connecting-IP (only Cloudflare can
-// connect, so it is trustworthy), else the TCP peer.
+// connect, so it is trustworthy), else the TCP peer. On the setup address
+// the header could be forged, so only the TCP peer counts there.
 func ClientIP(r *http.Request) string {
-	if v := r.Header.Get("CF-Connecting-IP"); v != "" {
+	if v := r.Header.Get("CF-Connecting-IP"); v != "" && !IsDirect(r) {
 		if a, err := netip.ParseAddr(v); err == nil {
 			return a.String()
 		}
@@ -127,6 +140,19 @@ func ClientIP(r *http.Request) string {
 }
 
 func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if IsDirect(r) {
+		if rt.SetupOpen == nil || !rt.SetupOpen() {
+			msg := "Setup is finished. Open the dashboard at its domain."
+			if h := rt.DashboardHost(); h != "" {
+				msg = "Setup is finished. The dashboard is at https://" + h + "/"
+			}
+			w.Header().Set("Connection", "close")
+			page(w, http.StatusForbidden, "Use the dashboard domain", msg, 0)
+			return
+		}
+		rt.Dashboard.ServeHTTP(w, r)
+		return
+	}
 	host := normalizeHost(r.Host)
 	// Host must match the TLS SNI, so a request can't use one zone's TLS
 	// settings (e.g. without AOP) to reach another zone's app.
@@ -134,7 +160,7 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		page(w, http.StatusMisdirectedRequest, "Misdirected request", "The Host header does not match the TLS server name.", 0)
 		return
 	}
-	if rt.DashboardHost != "" && host == rt.DashboardHost {
+	if dh := rt.DashboardHost(); dh != "" && host == dh {
 		rt.Dashboard.ServeHTTP(w, r)
 		return
 	}

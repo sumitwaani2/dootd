@@ -1,24 +1,7 @@
 {{define "content"}}
 {{$csrf := .CSRF}}
-<section class="card">
-  <h1>Settings</h1>
-  <h2>GitHub</h2>
-  {{if .Data.GitHubSet}}
-  <p>A token is set{{with .Data.GitHubLogin}} for <b>{{.}}</b>{{end}}. It is stored encrypted and only sent to github.com.</p>
-  {{else}}
-  <p class="muted">No token: only public repositories can be deployed.</p>
-  {{end}}
-  <form method="post" action="/settings/github-token" class="grid">
-    {{template "csrf" $csrf}}
-    <label class="wide">{{if .Data.GitHubSet}}Replace token{{else}}Personal access token{{end}}
-      <input type="password" name="token" autocomplete="off" placeholder="github_pat_…">
-      <small>Fine-grained token with <b>Contents: Read-only</b> on the repositories you deploy.</small></label>
-    <div class="wide"><button>Save token</button>
-    {{if .Data.GitHubSet}}<button name="remove" value="1" class="link" data-confirm-click="Remove the GitHub token?">remove token</button>{{end}}</div>
-  </form>
-</section>
-
-<section class="card">
+<h1>Settings</h1>
+<section class="card" id="cloudflare">
   <h2>Cloudflare</h2>
   {{with .Data.Edge}}
   <p>{{if .TokenSet}}A token is set (stored encrypted).{{else}}<span class="warn-text">No token yet: DNS records and certificates cannot be managed.</span>{{end}}
@@ -29,10 +12,10 @@
     {{template "csrf" $csrf}}
     <label class="wide">{{if .TokenSet}}Replace API token{{else}}API token{{end}}
       <input type="password" name="token" autocomplete="off" required>
-      <small>Permissions: Zone Read, DNS Edit, SSL and Certificates Edit, Zone Settings Edit. See docs/cloudflare-setup.md.</small></label>
+      <small>Permissions: Zone Read, DNS Edit, SSL and Certificates Edit, Zone Settings Edit (see docs/setup.md).</small></label>
     <div class="wide"><button>Verify and save</button></div>
   </form>
-  <form method="post" action="/settings/edge-sync" class="inline">{{template "csrf" $csrf}}<button>Sync DNS, certificates and AOP now</button></form>
+  <form method="post" action="/settings/edge-sync" class="inline">{{template "csrf" $csrf}}<button>Sync now</button></form> <small class="muted">DNS records, certificates and origin pulls are also synced every 6 hours and after every change.</small>
   {{with .LastError}}<p class="error pre">{{.}}</p>{{end}}
 
   <h3>Domains</h3>
@@ -53,15 +36,49 @@
     {{end}}</tbody>
   </table>
   {{end}}
-  {{else}}
-  <p class="muted">The edge is disabled in /etc/dootd/config.toml.</p>
   {{end}}
 </section>
 
+<section class="card" id="dashboard-domain">
+  <h2>Dashboard domain</h2>
+  {{with .Data.Edge}}
+  {{if .Dashboard}}
+  <p>The dashboard is at <a href="https://{{.Dashboard}}/"><b>{{.Dashboard}}</b></a>:
+    {{if $.Data.DashboardReady}}<span class="badge s-running">ready</span>{{else}}<span class="badge s-deploying">being set up</span> <small class="muted">DNS record, certificate and origin pulls; this usually takes under a minute. Until it is ready the dashboard also answers on the server's IP address.</small>{{end}}</p>
+  {{else}}
+  <p class="warn-text">Not set yet: the dashboard is only reachable on the server's IP address, with a certificate warning.</p>
+  {{end}}
+  <form method="post" action="/settings/dashboard-domain" class="grid" {{if .Dashboard}}data-confirm="Move the dashboard to the new domain? You sign in again there, and the old domain's DNS record and certificate are removed."{{end}}>
+    {{template "csrf" $csrf}}
+    <label class="wide">{{if .Dashboard}}New domain{{else}}Domain{{end}} <input name="domain" placeholder="dootd.example.com" required {{if not .TokenSet}}disabled{{end}}>
+      <small>{{if .TokenSet}}Must be in one of your Cloudflare zones. dootd creates the DNS record and the certificate.{{else}}Save the Cloudflare token first.{{end}}</small></label>
+    <div class="wide"><button {{if not .TokenSet}}disabled{{end}}>Save domain</button></div>
+  </form>
+  {{end}}
+</section>
+
+<section class="card" id="github">
+  <h2>GitHub</h2>
+  {{if .Data.GitHubSet}}
+  <p>A token is set{{with .Data.GitHubLogin}} for <b>{{.}}</b>{{end}}. It is stored encrypted and only sent to github.com.</p>
+  {{else}}
+  <p class="muted">No token: only public repositories can be deployed.</p>
+  {{end}}
+  <form method="post" action="/settings/github-token" class="grid">
+    {{template "csrf" $csrf}}
+    <label class="wide">{{if .Data.GitHubSet}}Replace token{{else}}Personal access token{{end}}
+      <input type="password" name="token" autocomplete="off" placeholder="github_pat_…">
+      <small>Fine-grained token with <b>Contents: Read-only</b> on the repositories you deploy.</small></label>
+    <div class="wide"><button>Save token</button>
+    {{if .Data.GitHubSet}}<button name="remove" value="1" class="link" data-confirm-click="Remove the GitHub token?">remove token</button>{{end}}</div>
+  </form>
+</section>
+
+
 <section class="card" id="backups">
   <h2>Backups</h2>
-  <p class="muted">Backups run {{.Data.Policy}} (set <code>[backups]</code> in /etc/dootd/config.toml to change). Works with Cloudflare R2, Backblaze B2, AWS S3, MinIO or any S3-compatible storage. Objects go under <code>&lt;prefix&gt;/{{.Data.HostID}}/&lt;app&gt;/</code>.</p>
-  {{with .Data.S3}}<p>Bucket <b>{{.Bucket}}</b> at {{.Endpoint}} (region {{.Region}}, prefix <code>{{.Prefix}}</code>, key <code>{{.AccessKey}}</code>). The secret is stored encrypted.</p>{{end}}
+  <p class="muted">App databases are backed up {{.Data.Policy}}, into one folder per app at the root of the bucket (<code>&lt;app&gt;/</code>). Works with Cloudflare R2, Backblaze B2, AWS S3, MinIO or any S3-compatible storage; use a bucket for dootd only.</p>
+  {{with .Data.S3}}<p>Bucket <b>{{.Bucket}}</b> at {{.Endpoint}} (region {{.Region}}, key <code>{{.AccessKey}}</code>). The secret is stored encrypted.</p>{{end}}
   <form method="post" action="/settings/s3" class="grid">
     {{template "csrf" $csrf}}
     <label class="wide">Endpoint <input name="endpoint" value="{{with .Data.S3}}{{.Endpoint}}{{end}}" placeholder="https://&lt;account id&gt;.r2.cloudflarestorage.com" required></label>
@@ -69,34 +86,12 @@
     <label>Region <input name="region" value="{{with .Data.S3}}{{.Region}}{{else}}auto{{end}}"><small>"auto" for R2</small></label>
     <label>Access key ID <input name="access_key" value="{{with .Data.S3}}{{.AccessKey}}{{end}}" autocomplete="off" required></label>
     <label>Secret access key <input type="password" name="secret_key" autocomplete="off" {{if not .Data.S3Set}}required{{end}} placeholder="{{if .Data.S3Set}}(unchanged){{end}}"></label>
-    <label>Prefix <input name="prefix" value="{{with .Data.S3}}{{.Prefix}}{{else}}dootd{{end}}"></label>
     <div class="wide"><button>Test and save</button>
     {{if .Data.S3Set}}<button name="remove" value="1" class="link" formnovalidate data-confirm-click="Remove the S3 settings? Backups will then only be kept on this server.">remove</button>{{end}}</div>
   </form>
 
-  <h3>Recovery kit</h3>
-  <p>The master key encrypts the tokens and env vars in dootd's database, including its daily backup. Without it, a restored dootd.db is useless.
-    {{with .Data.KitSaved}}<span class="muted">Last downloaded {{.}}.</span>{{else}}<span class="warn-text">Not downloaded yet.</span>{{end}}</p>
-  <form method="post" action="/settings/recovery-kit" class="inline">{{template "csrf" $csrf}}<button>Download recovery kit</button></form>
-  {{with .Data.SelfBackups}}
-  <h3>dootd.db backups</h3>
-  <table><tbody>{{range .}}<tr><td>#{{.ID}}</td><td>{{datetime .CreatedAt}}</td><td>{{.Status}}</td><td>{{bytes .Size}}</td><td>{{if .Uploaded}}bucket{{else}}server only{{end}}</td><td class="error-text">{{.Error}}</td></tr>{{end}}</tbody></table>
-  {{end}}
 </section>
 
-{{with .Data.Update}}
-<section class="card" id="updates">
-  <h2>Updates</h2>
-  <p>This server runs dootd <b>{{.Current}}</b>{{if .Dev}} <span class="muted">(a development build)</span>{{end}}.
-    {{if .Latest}}Latest release: <b>{{.Latest}}</b>{{with .LatestURL}} (<a href="{{.}}" rel="noreferrer">release notes</a>){{end}}, checked {{ago .Checked}}.{{else if .CheckError}}<span class="error-text">Last check failed: {{.CheckError}}</span>{{else}}<span class="muted">Not checked yet.</span>{{end}}</p>
-  {{with .Last}}<p class="{{if .OK}}muted{{else}}error-text{{end}}">Last update ({{datetime .At}}): {{.Detail}}.</p>{{end}}
-  <form method="post" action="/settings/update/check" class="inline">{{template "csrf" $csrf}}<button>Check for updates</button></form>
-  {{if .Newer}}
-  <form method="post" action="/settings/update/install" class="inline" data-confirm="Update dootd to {{.Latest}}? dootd and every app restart (a few seconds of downtime). If the new version fails to start 3 times, dootd goes back to {{.Current}} on its own.">{{template "csrf" $csrf}}<button>Update to {{.Latest}}</button></form>
-  {{end}}
-  <p class="muted">The download is checked against the release's checksums.txt. The current binary is kept as dootd.prev and dootd.db is copied before any database change.</p>
-</section>
-{{end}}
 
 <section class="card">
   <h2>Zig toolchains</h2>
