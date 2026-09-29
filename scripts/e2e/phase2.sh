@@ -22,6 +22,7 @@ nreleases() { find "$DATA_ROOT/apps/$1/releases" -mindepth 1 -maxdepth 1 -type d
 app_pid()   { pgrep -u "dootd-$1" -x sample-c | head -n1; }
 no_procs()  { ! pgrep -u "dootd-$1" >/dev/null; }
 dep_status() { db "SELECT status FROM deployments WHERE id = $1"; }
+dep_is()     { [ "$(dep_status "$1")" = "$2" ]; }
 branch_repo() { # branch_repo <name> <branch>: push a branch of sample-c into its own repo <name>
   git init -q --bare -b main "$GIT/$1.git"
   git -C "$WORKS/sample-c" push -q "file://$GIT/$1.git" "$2:main"
@@ -151,10 +152,10 @@ say "Deploy queue: one at a time, no duplicates"
 post /apps/slow/deploy >/dev/null
 QLOC="$(post /apps/sample-c/deploy)"
 QID="${QLOC##*/deployments/}"
-check "second deployment is queued" test "$(dep_status "$QID")" = queued
+check "second deployment is queued" dep_is "$QID" queued
 post /apps/sample-c/deploy >/dev/null
 check "a second deploy of the same app is refused" flash_has "still in progress" /apps/sample-c
-check "queued deploy runs after the slow one" wait_for 180 test "$(dep_status "$QID")" = succeeded
+check "queued deploy runs after the slow one" wait_for 180 dep_is "$QID" succeeded
 
 say "dootd restart during a build"
 RBEFORE="$(current sample-c)"
@@ -167,7 +168,7 @@ IID="${ILOC##*/deployments/}"
 sleep 2
 systemctl restart "$UNIT"
 check "app back on the previous release" wait_for 30 lpage_has "$PC" "Release: $RBEFORE<"
-check "interrupted deployment marked failed" test "$(dep_status "$IID")" = failed
+check "interrupted deployment marked failed" wait_for 10 dep_is "$IID" failed
 check "no build workspace left" test -z "$(ls -A "$DATA_ROOT/builds/sample-c")"
 
 if [ "$FAILS" -gt 0 ]; then echo "---- sample-c app.log ----"; tail -n 60 "$DATA_ROOT/apps/sample-c/logs/app.log" || true; fi

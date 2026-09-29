@@ -30,8 +30,10 @@ e2e_setup
 say "Add and deploy both sample apps"
 mkrepo sample-zig examples/sample-zig
 mkrepo sample-c examples/sample-c
+# Compiling the sqlite amalgamation with ReleaseSafe needs more than the
+# default 1G build memory (builds get no swap).
 check "sample-zig created" post_is "303 $DASH/apps/sample-zig" /apps --data type=zig --data-urlencode "repo=file://$GIT/sample-zig.git" \
-  --data branch=main --data memory=64M
+  --data branch=main --data memory=64M --data build_memory=2G
 check "sample-c created" post_is "303 $DASH/apps/sample-c" /apps --data type=c --data-urlencode "repo=file://$GIT/sample-c.git" \
   --data branch=main --data memory=64M --data cpu=0.5
 post /apps/sample-c/env --data key=GREETING --data value=hello >/dev/null
