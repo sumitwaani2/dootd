@@ -1,4 +1,5 @@
-# dootd sets CC="zig cc" (pinned Zig). Outside dootd: make CC="zig cc"
+# Built by .github/workflows/release.yml: make CC="zig cc -target x86_64-linux-musl"
+# Locally: make CC="zig cc" && make test CC="zig cc"
 CC     ?= cc
 CFLAGS ?= -O2 -g0
 CFLAGS += -std=c11 -Wall -Wextra -D_GNU_SOURCE -Ithird_party
@@ -24,10 +25,16 @@ third_party/sqlite3.c:
 		sqlite-autoconf-$(SQLITE_VER)/sqlite3.c sqlite-autoconf-$(SQLITE_VER)/sqlite3.h
 	rm third_party/$(SQLITE_TGZ)
 
+build/test: tests/test.c src/main.c build/sqlite3.o | build
+	$(CC) $(CFLAGS) -o $@ tests/test.c build/sqlite3.o -lm
+
+test: build/test
+	./build/test
+
 build:
 	mkdir -p build
 
 clean:
 	rm -rf build third_party
 
-.PHONY: clean
+.PHONY: clean test
