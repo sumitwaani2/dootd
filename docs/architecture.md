@@ -170,7 +170,7 @@ Running the same command again is how dootd is **updated** (it installs the late
 
 Before a dashboard domain exists there is no way to reach the dashboard through Cloudflare, so dootd has a **setup address**: `https://<server IP>`, served with a self-signed certificate (`/var/lib/dootd/setup/`, created on first start). The browser warns about the certificate once.
 
-- **Setup is open** while no dashboard domain is ready, **or** while an unused, unexpired one-time password exists. A dashboard domain is *ready* once dootd holds its Origin CA certificate and AOP is enforced for its zone (§9.3).
+- **Setup is open** while no dashboard domain is ready, **or** while an unused, unexpired one-time password exists. A dashboard domain is *ready* once dootd holds its Origin CA certificate, AOP is enforced for its zone (§9.3), the zone is active, and its SSL/TLS mode is known to be Full or Full (strict) (D41). The settings and home pages say which of these is still missing.
 - While setup is open, a connection from outside Cloudflare's ranges is let through the IP filter, marked as a *setup connection*, and gets the self-signed certificate without a client-certificate requirement. Every request on it goes to the dashboard, whatever its `Host`; **apps are never served on a setup connection**. Connections from Cloudflare addresses are handled exactly as before (§9).
 - On a setup connection the client IP is the TCP peer; `CF-Connecting-IP` is ignored (it could be forged). CSRF checks compare `Origin` with `https://<Host>` of the request.
 - While a dashboard domain is ready, the setup address accepts **only the one-time password**, never the admin password, so the admin password is never exposed outside Cloudflare.
@@ -255,7 +255,7 @@ The token is entered in Settings → Cloudflare, verified (the readable zones ar
 
 ### 10.1 Users
 - Each app gets its own system user `dootd-<app>` (`useradd --system --no-create-home --shell /usr/sbin/nologin`).
-- Its `data/`, `tmp/` and `cache/zig/<app>` directories are owned by that user with mode 0700. Releases are owned by root and world-readable. Other apps' directories cannot be read.
+- Its `data/` and `tmp/` directories are owned by that user with mode 0700. Releases are owned by root and world-readable. Other apps' directories cannot be read.
 
 ### 10.2 cgroup v2 tree
 Because of `Delegate=yes`, dootd owns `/sys/fs/cgroup/system.slice/dootd.service/`. cgroup v2 doesn't allow processes in inner nodes, so dootd first moves itself into a leaf:
@@ -287,7 +287,7 @@ dootd.service/
 
 ## 11. Releases and the deploy pipeline
 
-dootd does not compile anything (D38). Each app repository carries a workflow (template: `examples/release.yml`) that, when a `v*` tag is pushed, runs the app's tests, builds static binaries with Zig for `x86_64-linux-musl` and `aarch64-linux-musl`, and publishes a GitHub release with:
+dootd does not compile anything (D38). Each app repository carries a workflow (templates: `examples/sample-{zig,c}/.github/workflows/release.yml`) that, when a `v*` tag is pushed, runs the app's tests, builds static binaries with Zig for `x86_64-linux-musl` and `aarch64-linux-musl`, and publishes a GitHub release with:
 
 | Asset | Content |
 |---|---|
@@ -436,7 +436,7 @@ dootd never updates itself. Re-running the installer (§8) downloads and verifie
 |---|---|---|
 | dootd idle RSS | < 30 MB | 25 MB (11 MB anonymous, 15 MB mapped binary pages) |
 | dootd idle CPU | < 1 % (10 s sampling, no busy loops) | 0.03 % |
-| Proxy overhead | < 1 ms p50 added latency | not measured yet (soak test on a VPS) |
+| Proxy overhead | < 1 ms p50 added latency | 0.6 ms p50 added, including TLS (1 vCPU VPS, keep-alive, 500 requests: 0.32 ms direct, 0.93 ms through the edge) |
 | Restart with 5 apps | a few seconds of downtime | measured in the E2E (`systemctl restart` → all apps healthy) |
 | Binary size | < 30 MB | 18 MB (linux/amd64, stripped) |
 
@@ -486,6 +486,7 @@ To stay inside the memory budget dootd sets a soft heap limit of 12 MB (`debug.S
 | D38 | dootd never builds: apps are built and tested in GitHub Actions and published as GitHub Releases; dootd deploys the release tarball | Builds (sqlite with ReleaseSafe needs ~2 GB) don't fit next to the apps on a 1 GB VPS; removes the toolchain manager, the builder, git cloning and their attack surface |
 | D39 | Releases, not Actions artifacts | Permanent, named by version, simple API; rollback is picking an older tag |
 | D40 | One fixed asset name per architecture (`app-linux-<arch>.tar.gz`) plus `checksums.txt`, static musl binaries | No per-app naming rules; binaries don't depend on the server's libc; the checksum catches truncated or swapped downloads |
+| D41 | The dashboard domain is ready only when its zone is active and in Full or Full (strict) mode (the last mode read is kept when the API fails) | Found on the first real VPS run: a zone in Flexible mode (Cloudflare connects to :80, error 521) closed the setup address and locked the user out of the dashboard |
 
 ## 18. Test-only environment variables
 

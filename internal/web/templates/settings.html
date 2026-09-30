@@ -44,7 +44,8 @@
   {{with .Data.Edge}}
   {{if .Dashboard}}
   <p>The dashboard is at <a href="https://{{.Dashboard}}/"><b>{{.Dashboard}}</b></a>:
-    {{if $.Data.DashboardReady}}<span class="badge s-running">ready</span>{{else}}<span class="badge s-deploying">being set up</span> <small class="muted">DNS record, certificate and origin pulls; this usually takes under a minute. Until it is ready the dashboard also answers on the server's IP address.</small>{{end}}</p>
+    {{if $.Data.DashboardReady}}<span class="badge s-running">ready</span>{{else}}<span class="badge s-deploying">being set up</span> <small class="muted">DNS record, certificate, origin pulls and the zone's SSL/TLS mode; this usually takes under a minute. Until it is ready the dashboard also answers on the server's IP address.</small>
+    <br><span class="warn-text">Waiting for: {{$.Data.DashboardProblem}}.</span>{{end}}</p>
   {{else}}
   <p class="warn-text">Not set yet: the dashboard is only reachable on the server's IP address, with a certificate warning.</p>
   {{end}}

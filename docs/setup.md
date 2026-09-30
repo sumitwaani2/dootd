@@ -38,7 +38,7 @@ You can close SSH now.
 1. Open the address, accept the certificate warning, and sign in with the **one-time password** (leave the email empty).
 2. **Set up your account**: your email and a password (at least 12 characters).
 3. **Settings → Cloudflare**: paste the API token. dootd checks it and shows which zones it can use.
-4. **Settings → Dashboard domain**: enter e.g. `dootd.example.com`. dootd creates the DNS record, the certificate and the origin pull setup, and shows the progress. When it is ready, open `https://dootd.example.com` and sign in with your email and password. From then on the IP address no longer answers.
+4. **Settings → Dashboard domain**: enter e.g. `dootd.example.com`. dootd creates the DNS record, the certificate and the origin pull setup, and shows the progress. If the zone's SSL/TLS mode is not Full (strict) yet, press **Set Full (strict)** under **Zones** (new Cloudflare zones often start in Flexible, which cannot reach dootd). When it is ready, open `https://dootd.example.com` and sign in with your email and password. From then on the IP address no longer answers.
 5. **Settings → GitHub** (for private repos): a fine-grained token with *Contents: Read-only* on your repos.
 6. **Settings → Backups**: an R2 bucket (endpoint `https://<account id>.r2.cloudflarestorage.com`, region `auto`, an R2 API token with Object Read & Write on that bucket).
 7. **Your app repo** needs a `dootd.toml` and the release workflow (copy it from a sample, see [app-contract.md §2](app-contract.md#2-releases)). Push a tag (`git tag v1.0.0 && git push origin v1.0.0`): GitHub Actions tests and builds it and publishes a release.
@@ -68,7 +68,8 @@ It installs the latest dootd, keeps all apps and settings, restarts (a few secon
 |---|---|
 | `no Cloudflare zone found for …` | The domain isn't on this account, or the token doesn't cover that zone |
 | `… lacks the DNS: Edit permission` | Add the missing permission to the token |
-| Dashboard domain stays "pending" | Cloudflare is still activating the origin pull certificate; it usually takes under a minute, the page refreshes by itself |
+| Dashboard domain stays "being set up" | The page says what it waits for: usually the origin pull certificate (under a minute), a zone in Flexible mode (press **Set Full (strict)**), or a token without the Zone Settings permission |
+| Cloudflare error 521 | The zone's SSL/TLS mode is Flexible or Off, so Cloudflare connects to port 80, which dootd doesn't serve: **Settings → Zones → Set Full (strict)** |
 | `has a CNAME record` | Delete the CNAME in Cloudflare; dootd creates the A record |
 | Cloudflare error 526 | The SSL mode is Full (strict) but the certificate isn't installed yet; press **Sync now** in Settings |
 | Cloudflare error 525 / 520 right after setup | Origin pulls were turned off in Cloudflare; the next sync turns them back on, or press **Sync now** |

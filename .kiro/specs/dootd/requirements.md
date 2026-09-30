@@ -60,7 +60,7 @@ Reference docs: #[[file:docs/architecture.md]] and #[[file:docs/app-contract.md]
 #### Acceptance Criteria
 
 1. WHILE setup is open, THE dootd SHALL accept connections on :443 from any address that is not a Cloudflare address and serve them the dashboard with a self-signed certificate. The dashboard is the only thing reachable this way; app domains SHALL never be served on such a connection.
-2. Setup SHALL be open WHILE no dashboard domain is ready, OR WHILE an unused, unexpired one-time password exists. A dashboard domain is ready once it has its Origin CA certificate and AOP is enforced for its zone.
+2. Setup SHALL be open WHILE no dashboard domain is ready, OR WHILE an unused, unexpired one-time password exists. A dashboard domain is ready once it has its Origin CA certificate, AOP is enforced for its zone, the zone is active, and the zone's SSL/TLS mode is known to be Full or Full (strict). THE dashboard SHALL say which of these it is waiting for.
 3. WHILE setup is open AND a dashboard domain is ready, THE setup address SHALL accept only the one-time password, not the admin password.
 4. WHEN setup closes, THE dootd SHALL close non-Cloudflare connections before the TLS handshake again, exactly as in Requirement 12, and answer any request still arriving on an open setup connection with a page pointing to the dashboard domain.
 5. ON the setup address, THE dootd SHALL use the TCP peer address as the client IP (never a client-supplied header) for rate limiting and logs.
@@ -135,7 +135,7 @@ Reference docs: #[[file:docs/architecture.md]] and #[[file:docs/app-contract.md]
 
 #### Acceptance Criteria
 
-1. THE project SHALL provide a workflow template (`examples/release.yml`) that, when a `v*` tag is pushed, runs the app's tests, builds static `linux/amd64` and `linux/arm64` binaries, and publishes a GitHub release with `app-linux-<arch>.tar.gz` and `checksums.txt`. IF a test or build step fails, THEN no release SHALL be published.
+1. THE project SHALL provide a workflow template (`examples/sample-{zig,c}/.github/workflows/release.yml`) that, when a `v*` tag is pushed, runs the app's tests, builds static `linux/amd64` and `linux/arm64` binaries, and publishes a GitHub release with `app-linux-<arch>.tar.gz` and `checksums.txt`. IF a test or build step fails, THEN no release SHALL be published.
 2. THE release tarball SHALL contain `dootd.toml` at its root, the binary named by `run`, and every file the app reads at runtime (templates, static files).
 3. WHEN a release is deployed, THE dootd SHALL download the asset for the server's CPU architecture and `checksums.txt` (with the stored GitHub token, so private repositories work) and verify the asset's SHA-256.
 4. IF the release, the asset for this architecture or `checksums.txt` is missing, or the checksum does not match, THEN THE dootd SHALL fail the deploy without touching the running release and name the problem.

@@ -101,8 +101,9 @@ type HostStatus struct {
 type ZoneStatus struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
-	SSLMode   string `json:"ssl_mode"`
-	AOP       string `json:"aop"` // off, pending, enforced
+	SSLMode   string `json:"ssl_mode"` // "" = not known (never read)
+	Status    string `json:"status"`   // Cloudflare zone status ("" = not known yet)
+	AOP       string `json:"aop"`      // off, pending, enforced
 	Warning   string `json:"warning,omitempty"`
 	Error     string `json:"error,omitempty"`
 	AOPCertID string `json:"-"`
@@ -170,13 +171,51 @@ func (m *Manager) DashboardHost() string {
 }
 
 // DashboardReady reports whether the dashboard domain works through
-// Cloudflare: its certificate is installed and AOP is enforced for its zone.
+// Cloudflare: its certificate is installed, AOP is enforced for its zone,
+// the zone is active and its SSL/TLS mode makes Cloudflare connect to :443
+// (Full or Full (strict)). Until then the setup address stays open, so a
+// zone in Flexible mode (Cloudflare connects to :80, error 521) cannot lock
+// the user out of the dashboard.
 func (m *Manager) DashboardReady() bool {
+	return m.DashboardProblem() == ""
+}
+
+// DashboardProblem says what the dashboard domain is still waiting for,
+// in words for the dashboard; "" when it is ready.
+func (m *Manager) DashboardProblem() string {
 	m.mu.RLock()
 	h := m.dashHost
-	enforced := m.enforce[m.hostZone[h]]
+	zid := m.hostZone[h]
+	enforced := m.enforce[zid]
+	var zs ZoneStatus
+	if z := m.zoneState[zid]; z != nil {
+		zs = *z
+	}
 	m.mu.RUnlock()
-	return h != "" && m.Certs.Get(h) != nil && (enforced || !m.cfg.AOP)
+	switch {
+	case h == "":
+		return "no dashboard domain is set"
+	case m.Certs.Get(h) == nil:
+		return "waiting for its DNS record and Origin CA certificate"
+	case m.cfg.AOP && !enforced:
+		return "waiting for Cloudflare to activate authenticated origin pulls for " + zoneName(zs, h)
+	case zs.Status != "" && zs.Status != "active":
+		return fmt.Sprintf("the zone %s is %q at Cloudflare, not active: finish adding the domain to Cloudflare (switch its nameservers)", zoneName(zs, h), zs.Status)
+	case zs.SSLMode == "" && zs.Warning != "":
+		return zs.Warning
+	case zs.SSLMode == "":
+		return "checking the SSL/TLS mode of " + zoneName(zs, h)
+	case zs.SSLMode != "full" && zs.SSLMode != "strict":
+		return fmt.Sprintf("the SSL/TLS mode of %s is %q, so Cloudflare cannot reach dootd; set it to Full (strict) (Settings → Zones)", zoneName(zs, h), zs.SSLMode)
+	}
+	return ""
+}
+
+func zoneName(zs ZoneStatus, host string) string {
+	if zs.Name != "" {
+		return zs.Name
+	}
+	return "the zone of " + host
 }
 
 // SetupOpen reports whether the setup address accepts connections: until
@@ -443,29 +482,49 @@ func (m *Manager) token(ctx context.Context) (string, error) {
 }
 
 // SetToken verifies and stores the Cloudflare API token (sealed). It
-// returns the zone names the token can read.
-func (m *Manager) SetToken(ctx context.Context, token string) ([]string, error) {
+// returns the zone names the token can read and the permissions it
+// appears to lack (Req 7.1), found by reading one zone.
+func (m *Manager) SetToken(ctx context.Context, token string) (zones, missing []string, err error) {
 	c := m.client(token)
 	if err := c.Verify(ctx); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	zs, err := c.Zones(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	if len(zs) > 0 {
+		missing = missingPermissions(ctx, c, zs[0])
 	}
 	sealed, err := m.box.Seal([]byte(token), purposeCFToken)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := m.store.SetSetting(ctx, SettingCFToken, sealed); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var names []string
 	for _, z := range zs {
-		names = append(names, z.Name)
+		zones = append(zones, z.Name)
 	}
-	sort.Strings(names)
-	return names, nil
+	sort.Strings(zones)
+	return zones, missing, nil
+}
+
+// missingPermissions probes read calls that need the token's other
+// permissions. A 401/403 means the permission is missing; other errors
+// (network) say nothing and are ignored.
+func missingPermissions(ctx context.Context, c *cloudflare.Client, z cloudflare.Zone) []string {
+	var missing []string
+	if _, err := c.DNSRecords(ctx, z.ID, z.Name); cloudflare.IsForbidden(err) {
+		missing = append(missing, "Zone → DNS → Edit")
+	}
+	if _, err := c.ListAOPCerts(ctx, z.ID); cloudflare.IsForbidden(err) {
+		missing = append(missing, "Zone → SSL and Certificates → Edit")
+	}
+	if _, err := c.SSLMode(ctx, z.ID); cloudflare.IsForbidden(err) {
+		missing = append(missing, "Zone → Zone Settings → Edit")
+	}
+	return missing
 }
 
 // Sync reconciles DNS records, certificates, AOP and SSL mode checks.
@@ -623,13 +682,31 @@ func (m *Manager) syncZone(ctx context.Context, c *cloudflare.Client, z cloudfla
 	}
 	var errs []error
 
+	zs.Status = z.Status
+	if z.Status != "" && z.Status != "active" {
+		zs.Warning = fmt.Sprintf("the zone is %q at Cloudflare, not active: its sites cannot be reached until the domain's nameservers point to Cloudflare", z.Status)
+	}
 	mode, err := c.SSLMode(ctx, z.ID)
 	if err != nil {
 		errs = append(errs, err)
+		// Keep the last mode we read: an API failure must not change
+		// whether the dashboard domain counts as ready.
+		if prev != nil {
+			mode = prev.SSLMode
+		}
+		if cloudflare.IsForbidden(err) && mode == "" {
+			zs.Warning = "dootd cannot read the SSL/TLS mode: the Cloudflare token lacks the Zone → Zone Settings → Edit permission. " +
+				"Edit the token in Cloudflare (My Profile → API Tokens) to add it, then press Sync now"
+		}
 	}
 	zs.SSLMode = mode
-	if mode != "" && mode != "strict" {
+	switch mode {
+	case "", "strict":
+	case "full":
 		zs.Warning = fmt.Sprintf("SSL/TLS mode is %q; use Full (strict) so Cloudflare verifies dootd's certificate (Settings → Zones → Set Full (strict))", mode)
+	default: // flexible, off
+		zs.Warning = fmt.Sprintf("SSL/TLS mode is %q: Cloudflare connects to this server over plain HTTP, which dootd does not serve, "+
+			"so sites in this zone fail with error 521. Set it to Full (strict) (Settings → Zones → Set Full (strict))", mode)
 	}
 
 	enforced := false

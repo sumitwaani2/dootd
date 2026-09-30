@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/sumitwaani2/dootd/internal/app"
@@ -29,12 +30,20 @@ func healthCheck(ctx context.Context, spec app.Spec, p Policy) error {
 	}
 
 	var last error
+	deadline, _ := ctx.Deadline()
 	t := time.NewTicker(p.HealthInterval)
 	defer t.Stop()
 	for {
-		last = probe(ctx, client, addr, url, spec.Domain)
-		if last == nil {
+		err := probe(ctx, client, addr, url, spec.Domain)
+		if err == nil {
 			return nil
+		}
+		// A probe cut short by the deadline says nothing about the app;
+		// keep the previous result (e.g. "GET /healthz returned 404").
+		// Compare clocks: the dial can fail at the deadline slightly
+		// before ctx.Err() is set.
+		if last == nil || time.Now().Before(deadline) {
+			last = err
 		}
 		select {
 		case <-ctx.Done():
@@ -51,7 +60,10 @@ func probe(ctx context.Context, c *http.Client, addr, url, host string) error {
 	d := net.Dialer{Timeout: 500 * time.Millisecond}
 	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		return fmt.Errorf("nothing listening on %s", addr)
+		if errors.Is(err, syscall.ECONNREFUSED) {
+			return fmt.Errorf("nothing listening on %s", addr)
+		}
+		return fmt.Errorf("connect to %s: %w", addr, err)
 	}
 	conn.Close()
 
