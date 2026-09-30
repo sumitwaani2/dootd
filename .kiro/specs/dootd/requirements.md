@@ -4,6 +4,8 @@
 
 dootd is a self-contained, single-binary PaaS for hosting a few (3–5) small server-rendered Zig/C web apps that use SQLite, on one Ubuntu 24.04+ VPS behind Cloudflare. It is an internal tool for **one non-technical user**. The user runs **one command over SSH, once**; it prints a one-time password and an address. Everything after that happens in the web dashboard: the admin email and password, the Cloudflare and GitHub tokens, the dashboard's own domain, the backup bucket, adding apps, env vars, deploys, logs, monitoring, backups and restores.
 
+**dootd never builds.** Each app is built, tested and packaged by a GitHub Actions workflow in its own repository and published as a GitHub Release; dootd downloads, verifies and runs the release. It keeps what must run on the server: routing, TLS, Cloudflare-only access, runtime isolation, env vars, backups, logs and monitoring.
+
 Design rule: **one way to do each thing.** No CLI for day-to-day work, no config file to edit, no optional features that need their own maintenance. Correctness and ease beat features.
 
 Scope: 1 machine, 1 dashboard user, 1 GitHub account (PAT), 1 Cloudflare account (API token), 1 S3 bucket, 1 domain per app, plus 1 dashboard domain.
@@ -17,7 +19,8 @@ Reference docs: #[[file:docs/architecture.md]] and #[[file:docs/app-contract.md]
 - **One-time password**: a random password printed by the installer; it signs in once and expires after 24 hours.
 - **Setup address**: `https://<server IP>`, served with a self-signed certificate while setup is open.
 - **App**: a user Zig/C web application that follows the app contract. Its name is derived from its GitHub repository name.
-- **Release**: an immutable build output of one git commit of an app.
+- **GitHub release**: a tagged release in the app's repository, published by its workflow, with the assets `app-linux-amd64.tar.gz`, `app-linux-arm64.tar.gz` and `checksums.txt`.
+- **Release**: one GitHub release unpacked on the server (`releases/<tag>/`); the last 3 are kept.
 - **DATA_DIR**: the per-app persistent directory that holds its SQLite databases.
 - **Backup folder**: the folder `<app name>/` at the root of the bucket that holds an app's backups.
 - **AOP**: Cloudflare Authenticated Origin Pulls (mTLS from Cloudflare to the origin).
@@ -45,7 +48,7 @@ Reference docs: #[[file:docs/architecture.md]] and #[[file:docs/app-contract.md]
 
 1. WHEN the installer runs on a host that is not Ubuntu 24.04+, lacks systemd, lacks cgroup v2, or has an unsupported CPU architecture, THE installer SHALL stop with a clear message and change nothing.
 2. WHEN the installer runs on a supported host, THE installer SHALL download the binary for the host architecture, verify its SHA-256 against `checksums.txt`, and install it to `/usr/local/bin/dootd`. IF the checksum does not match, THEN it SHALL delete the download, change nothing and stop with an error.
-3. THE installer SHALL ask no questions. It SHALL create `/etc/dootd` and `/var/lib/dootd`, generate the master key if missing, install `make` if missing, create a 2 GB swapfile if the host has no swap, install and enable the systemd unit, start dootd, and print the setup address and a new one-time password.
+3. THE installer SHALL ask no questions and install no system packages. It SHALL create `/etc/dootd` and `/var/lib/dootd`, generate the master key if missing, install and enable the systemd unit, start dootd, and print the setup address and a new one-time password.
 4. THE dootd SHALL store only an argon2id hash of the one-time password, and the password SHALL stop working after one successful sign-in or after 24 hours, whichever comes first.
 5. WHEN the user signs in with the one-time password, THE dashboard SHALL allow nothing but setting the admin email and a new password (at least 12 characters). Saving them SHALL consume the one-time password and revoke every other session.
 6. WHEN the installer runs again on a server that already has dootd, THE installer SHALL replace the binary with the latest release (the update path), keep all data and settings, and print a new one-time password. This is also the recovery path for a forgotten password or an unreachable dashboard domain.
@@ -108,17 +111,17 @@ Reference docs: #[[file:docs/architecture.md]] and #[[file:docs/app-contract.md]
 
 1. WHEN a Cloudflare token is saved, THE dootd SHALL verify it and list any missing permissions from: Zone Read, DNS Edit, SSL and Certificates Edit, Zone Settings Edit.
 2. WHEN a dashboard domain is saved, THE dootd SHALL require a Cloudflare token, reject a domain used by an app, then create the proxied DNS record, the Origin CA certificate and the AOP setup for it, and show its progress. WHEN the domain is replaced, THE dootd SHALL remove the old domain's DNS records and revoke its certificate.
-3. WHEN a GitHub PAT is saved, THE dootd SHALL validate it against the GitHub API and show which account it belongs to.
+3. WHEN a GitHub PAT is saved, THE dootd SHALL validate it against the GitHub API and show which account it belongs to. The token needs only *Contents: Read-only*; it is used to list releases and download their assets.
 4. WHEN S3 settings (endpoint, region, bucket, access key, secret) are saved, THE dootd SHALL perform a test upload, read-back and delete, and save the settings only if that succeeds.
 5. THE dootd SHALL detect the server's public IPv4 (and IPv6, if any) itself; the user never enters an IP address.
 
 ### Requirement 8: App management
 
-**User Story:** As the operator, I want to add an app by choosing a repo, branch, type and domain, so it's ready to deploy.
+**User Story:** As the operator, I want to add an app by choosing its repository and domain, so it is ready to deploy its releases.
 
 #### Acceptance Criteria
 
-1. WHEN an app is added, THE dootd SHALL require a GitHub repo, a branch, a type (`zig` or `c`) and optionally one domain not used by another app or by the dashboard. `dootd.toml` is read from the repository root.
+1. WHEN an app is added, THE dootd SHALL require a GitHub repository and accept optionally one domain not used by another app or by the dashboard, plus resource limits.
 2. THE app name SHALL be derived from the repository name: lowercased, with `_` and `.` replaced by `-`. IF the result is not a valid app name (2–24 characters, `a–z`, `0–9`, `-`, starting with a letter) or is already used, THEN THE dootd SHALL refuse the app and say why.
 3. WHEN an app is added, THE dootd SHALL create a dedicated system user, its directories and cgroup, assign a stable port, and, if a domain is set, create or update a proxied DNS record and obtain an Origin CA certificate for it.
 4. WHEN an app is added AND a bucket is configured, THE form SHALL list the backup folders in the bucket and preselect the one named like the app, if it exists. IF a folder is chosen, THEN THE dootd SHALL restore that folder's newest backup into the new app's DATA_DIR (verified as in Requirement 16) before the first deploy.
@@ -126,18 +129,18 @@ Reference docs: #[[file:docs/architecture.md]] and #[[file:docs/app-contract.md]
 6. WHEN an app is deleted, THE dootd SHALL stop it and remove its user, cgroup, releases and routing, and SHALL ask whether to keep or delete its DATA_DIR and its backups.
 7. THE dootd SHALL support at least 5 apps on one host.
 
-### Requirement 9: Build with pinned toolchain
+### Requirement 9: Release artifacts
 
-**User Story:** As a Zig/C developer, I want each app built with exactly the Zig version it pins, so builds are reproducible.
+**User Story:** As a Zig/C developer, I want my app built and tested on GitHub's runners and only the result shipped to the server, so a small VPS never compiles anything.
 
 #### Acceptance Criteria
 
-1. WHEN a build starts, THE dootd SHALL read `dootd.toml` from the repo root and validate `contract`, `zig_version` and `run`, reporting every problem clearly.
-2. WHEN the pinned Zig version is not cached, THE dootd SHALL download it via `ziglang.org/download/index.json`, verify its SHA-256, and install it atomically.
-3. IF the pinned version does not exist or its checksum does not match, THEN THE dootd SHALL fail the build without affecting the running release.
-4. THE dootd SHALL run the build as the app's user, in a build cgroup with a memory limit (default 1 GB), a lower CPU weight and a timeout (default 15 minutes), with the pinned `zig` first on `PATH` and `CC="zig cc"` and `CXX="zig c++"` set.
-5. THE dootd SHALL run at most one build at a time on the host and queue any others.
-6. THE dootd SHALL stream the build log live to the dashboard and keep the last 20 build logs per app.
+1. THE project SHALL provide a workflow template (`examples/release.yml`) that, when a `v*` tag is pushed, runs the app's tests, builds static `linux/amd64` and `linux/arm64` binaries, and publishes a GitHub release with `app-linux-<arch>.tar.gz` and `checksums.txt`. IF a test or build step fails, THEN no release SHALL be published.
+2. THE release tarball SHALL contain `dootd.toml` at its root, the binary named by `run`, and every file the app reads at runtime (templates, static files).
+3. WHEN a release is deployed, THE dootd SHALL download the asset for the server's CPU architecture and `checksums.txt` (with the stored GitHub token, so private repositories work) and verify the asset's SHA-256.
+4. IF the release, the asset for this architecture or `checksums.txt` is missing, or the checksum does not match, THEN THE dootd SHALL fail the deploy without touching the running release and name the problem.
+5. THE dootd SHALL unpack the tarball safely (no absolute paths, `..`, device files or symlinks leaving the release; bounded size), make it root-owned and read-only for the app, validate `dootd.toml`, and check that `run` names an executable ELF binary for the server's architecture.
+6. THE dootd SHALL NOT clone repositories, install compilers or run build commands.
 
 ### Requirement 10: Deploy and rollback
 
@@ -145,12 +148,14 @@ Reference docs: #[[file:docs/architecture.md]] and #[[file:docs/app-contract.md]
 
 #### Acceptance Criteria
 
-1. THE dootd SHALL deploy only when the user clicks Deploy, Redeploy or Rollback. It SHALL never deploy on git push.
-2. WHEN a deploy is triggered, THE dootd SHALL clone the branch HEAD and build it while the current release keeps serving.
-3. WHEN the build succeeds, THE dootd SHALL show a 503 "deploying" page, stop the old process, take a pre-deploy backup, switch to the new release, start it and run the health check.
-4. IF the new release fails its health check within 30 seconds, THEN THE dootd SHALL stop it, restore and start the previous release, and mark the deploy failed. It SHALL leave the database as is and offer to restore the pre-deploy backup.
-5. THE dootd SHALL keep the last 3 releases and allow rollback to any of them without rebuilding.
-6. THE dootd SHALL keep a deploy history with commit SHA, status, duration and error.
+1. THE dootd SHALL deploy only when the user clicks Deploy or Roll back. It SHALL never deploy on its own when a release is published.
+2. THE app page SHALL offer the 10 newest GitHub releases (drafts excluded), with the latest preselected.
+3. WHEN a deploy is triggered, THE dootd SHALL download, verify and unpack the chosen release while the current release keeps serving.
+4. WHEN the release is ready, THE dootd SHALL show a 503 "deploying" page, stop the old process, take a pre-deploy backup, switch to the new release, start it and run the health check.
+5. IF the new release fails its health check within 30 seconds, THEN THE dootd SHALL stop it, restore and start the previous release, and mark the deploy failed. It SHALL leave the database as is and offer to restore the pre-deploy backup.
+6. THE dootd SHALL keep the last 3 releases on the server and roll back to any of them without downloading. Deploying an older tag from the list downloads it again.
+7. THE dootd SHALL run at most one deployment at a time on the host and queue the others.
+8. THE dootd SHALL stream the deploy log live, keep the last 20 deploy logs per app, and keep a deploy history with the tag, status, duration and error.
 
 ### Requirement 11: Runtime supervision and isolation
 

@@ -10,7 +10,7 @@ Cloudflare (proxied, Full strict) ──HTTPS──► dootd (TLS + routing + da
 
 ## What it does
 
-- **Deploy from GitHub with a click.** Add a repo, set env vars, press **Deploy**. dootd clones the repo, builds it with the Zig version the app pins, and runs it.
+- **Deploy GitHub releases with a click.** Your app's own GitHub Actions workflow tests and builds it and publishes a release when you push a tag; dootd lists the releases, and **Deploy** downloads, verifies and runs the one you pick. The server never compiles anything.
 - **Routing and TLS built in.** Requests are routed by Host header. dootd issues Cloudflare Origin CA certificates for Full (strict) mode.
 - **Only Cloudflare can reach your apps.** dootd checks that traffic comes from Cloudflare IPs and verifies Authenticated Origin Pulls with its own CA.
 - **Light isolation.** Each app runs as its own Linux user, with cgroup v2 limits on memory, CPU and process count.

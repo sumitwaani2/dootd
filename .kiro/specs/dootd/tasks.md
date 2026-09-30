@@ -182,5 +182,14 @@ Tasks 46–47 built a CLI bootstrap (`dootd init`, `init --restore`, recovery ki
   - _Requirements: 2.1–2.6, 18_
 - [x] 58. E2E scripts drive only the installer and the dashboard (shared helpers); test-only `DOOTD_TEST_*` variables for the fake Cloudflare API, public IPs and a short backup schedule
   - Automated: `scripts/e2e/lib.sh` + phases 1–7 (459 checks): install, one-time password, setup address, dashboard domain moves, bucket folders and restore on Add app, update and recovery by re-running install.sh, a new server from scratch; 28 MB idle RSS with 5 apps, restart of 6 apps in 1.4 s
+- [ ] 59. Spec and docs: dootd never builds; apps are released by GitHub Actions (contract 2, D38–D40)
+  - _Requirements: 9, 10_
+- [ ] 60. Release workflows for both samples (test, static musl builds for amd64 + arm64, package, smoke test, publish); CI runs them on every PR without publishing
+  - _Requirements: 9.1, 9.2_
+- [ ] 61. Remove builds from dootd: toolchain manager, builder, git clone (go-git, xz), build cgroups, Zig caches; app type, branch and build limits; `make` and the swapfile in the installer
+  - _Requirements: 2.3, 9.6_
+- [ ] 62. Release deploys: releases API, checksum, safe unpacking, ELF check, manifest v2, deploy dropdown (10 newest, latest preselected), rollback to kept releases
+  - _Requirements: 9.3–9.5, 10_
+- [ ] 63. E2E with a fake GitHub API (`e2etool ghmock`) and releases built by the samples' own workflows
 - [ ] 49. 7-day soak test with 5 apps on a 1 GB VPS, plus a run against real Cloudflare and R2
 - [ ] 50. Tag `v1.0.0`

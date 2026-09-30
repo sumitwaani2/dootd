@@ -2,7 +2,7 @@
 
 ## Overview
 
-dootd is one Go process, run as root by systemd. It terminates TLS on :443, routes requests by Host header to the dashboard or to app processes on `127.0.0.1`, builds apps from GitHub with a pinned Zig toolchain, supervises them in per-app cgroups under per-app users, and backs up their SQLite databases to S3-compatible storage.
+dootd is one Go process, run as root by systemd. It terminates TLS on :443, routes requests by Host header to the dashboard or to app processes on `127.0.0.1`, deploys apps from their GitHub releases (built and tested by each app's own GitHub Actions workflow; dootd never builds), supervises them in per-app cgroups under per-app users, and backs up their SQLite databases to S3-compatible storage.
 
 The user touches exactly two things: the installer (once over SSH, again to update or recover) and the dashboard (everything else). There is no config file and no admin CLI.
 
@@ -18,12 +18,12 @@ Cloudflare ─:443─► edge (CF-IP filter → TLS/SNI + AOP mTLS → Host rout
                      ├─ dashboard host → web (auth, SSE)
                      └─ app host → ReverseProxy → 127.0.0.1:$PORT → app (own uid + cgroup)
 anyone ─:443─► (only while setup is open) self-signed TLS → web
-deployer → github (clone) → toolchain (zig) → builder (build cgroup) → supervisor
+deployer → github (releases, asset download) → artifact (verify, unpack, ELF check) → supervisor
 backup (VACUUM INTO → tar+zstd → s3 <app>/)   metrics (/proc, cgroup, edge counters)
 store (dootd.db, migrations)                  secrets (master.key, AES-256-GCM)
 ```
 
-Key decisions (full list in architecture.md §17): Go with `CGO_ENABLED=0`; no containers; stop-then-start deploys; deploy only on click; Cloudflare Origin CA plus zone AOP with dootd's own CA plus a Cloudflare IP filter; snapshot backups every 3 h; pinned Zig per app, also used as the C compiler; server-rendered HTML with a small vanilla script and SVG charts; **the dashboard is the only interface** (D33); first sign-in through a one-time password on the setup address (D34); updates by re-running the installer (D35).
+Key decisions (full list in architecture.md §17): Go with `CGO_ENABLED=0`; no containers; stop-then-start deploys; deploy only on click; Cloudflare Origin CA plus zone AOP with dootd's own CA plus a Cloudflare IP filter; snapshot backups every 3 h; apps built in GitHub Actions and deployed from GitHub releases (D38–D40); server-rendered HTML with a small vanilla script and SVG charts; **the dashboard is the only interface** (D33); first sign-in through a one-time password on the setup address (D34); updates by re-running the installer (D35).
 
 ## Components and Interfaces
 
@@ -37,12 +37,12 @@ Key decisions (full list in architecture.md §17): Go with `CGO_ENABLED=0`; no c
 | `internal/web` | Dashboard handlers and templates (embedded) | 2.5, 6–8, 10, 14–17 |
 | `internal/edge` | Listener, IP filter, setup access, TLS, router, proxy, counters, dashboard domain | 3, 7.2, 7.5, 12, 13, 17 |
 | `internal/cloudflare` | Zones, DNS, Origin CA, AOP, settings, IPs | 7.1, 8.3, 12 |
-| `internal/github` | PAT validation, repo listing, go-git clone | 7.3, 10.2 |
-| `internal/toolchain` | Zig index, download, verify, cache | 9.2, 9.3 |
-| `internal/builder` | Build in cgroup as the app user, build logs | 9 |
-| `internal/deployer` | Deploy state machine, releases, rollback, queue | 10 |
+| `internal/github` | PAT validation, repo listing, releases, asset downloads | 7.3, 9.3, 10.2 |
+| `internal/artifact` | Checksum, safe tarball unpacking, ELF architecture check | 9.3–9.5 |
+| `internal/manifest` | `dootd.toml` (contract 2) | 9.5 |
+| `internal/deployer` | Deploy state machine, kept releases, rollback, queue | 10 |
 | `internal/supervisor` | Process lifecycle, restart policy | 11 |
-| `internal/cgroup`, `internal/users` | cgroup v2 tree, per-app users | 8.3, 11 |
+| `internal/cgroup`, `internal/users` | cgroup v2 tree, per-app users (runtime isolation) | 8.3, 11 |
 | `internal/apps` | App registry, name from repo, restore on add | 8 |
 | `internal/logs` | Rotating files, ring buffer, live fan-out | 14 |
 | `internal/backup`, `internal/s3` | Snapshot, archive, upload, retention, restore, bucket folders | 8.4, 15, 16 |
@@ -97,6 +97,20 @@ func IsDirect(r *http.Request) bool                        // request arrived on
 ```
 `Manager.SetupOpen` is a callback (`!DashboardReady() || time.Now().Before(auth.SetupUntil())`). The listener lets a non-Cloudflare connection through only while it returns true and tags it; TLS for tagged connections uses a self-signed certificate (`/var/lib/dootd/setup/`) with no client-certificate requirement; the router sends tagged requests to the dashboard only.
 
+**github: releases** (Req 9, 10.2)
+```go
+func (a *API) Releases(ctx, owner, repo string, n int) ([]Release, error)   // newest first, drafts skipped
+func (a *API) ReleaseByTag(ctx, owner, repo, tag string) (Release, error)
+func (a *API) Download(ctx, owner, repo string, assetID int64, dst string, max int64) error // asset API, follows the signed redirect without the token
+```
+
+**artifact** (Req 9.3–9.5)
+```go
+func Checksum(sums []byte, name string) (string, error)       // the SHA-256 for name in checksums.txt
+func Unpack(tarGz, dst string, max int64) error              // safe extraction (fuzzed)
+func CheckELF(path, goarch string) error                     // executable, ELF, machine matches
+```
+
 **backup: bucket folders** (Req 8.4, 15.3)
 ```go
 func (s *Service) Folders(ctx) ([]string, error)                        // top-level folders in the bucket
@@ -122,6 +136,6 @@ Defined in architecture.md §7.
 
 ## Testing Strategy
 
-- Unit tests for pure logic: secrets, migrations, `dootd.toml` validation, tar extraction (fuzzed), backup archives (fuzzed), retention selection, app names from repo names, the one-time password.
-- End-to-end scripts on real Ubuntu VMs for everything involving systemd, cgroups, users, TLS and the dashboard. Test-only environment variables (`DOOTD_TEST_*`, architecture §18) point dootd at a fake Cloudflare API and shorten the backup schedule; they are not a user feature.
+- Unit tests for pure logic: secrets, migrations, `dootd.toml` validation, release tarball extraction (fuzzed), the releases client (against `httptest`), backup archives (fuzzed), retention selection, app names from repo names, the one-time password.
+- End-to-end scripts on real Ubuntu VMs for everything involving systemd, cgroups, users, TLS and the dashboard. Test-only environment variables (`DOOTD_TEST_*`, architecture §18) point dootd at fake Cloudflare and GitHub APIs and shorten the backup schedule; they are not a user feature.
 - Manual check on a real VPS with real Cloudflare and R2 before v1.0.
