@@ -434,11 +434,11 @@ dootd never updates itself. Re-running the installer (§8) downloads and verifie
 
 | Item | Target | Measured (Phase 6 E2E, Ubuntu 24.04 runner, 5 apps, idle) |
 |---|---|---|
-| dootd idle RSS | < 30 MB | 28 MB (11 MB anonymous, 18 MB mapped binary pages) |
+| dootd idle RSS | < 30 MB | 25 MB (11 MB anonymous, 15 MB mapped binary pages) |
 | dootd idle CPU | < 1 % (10 s sampling, no busy loops) | 0.03 % |
 | Proxy overhead | < 1 ms p50 added latency | not measured yet (soak test on a VPS) |
 | Restart with 5 apps | a few seconds of downtime | measured in the E2E (`systemctl restart` → all apps healthy) |
-| Binary size | < 30 MB | 21 MB (linux/amd64, stripped) |
+| Binary size | < 30 MB | 18 MB (linux/amd64, stripped) |
 
 To stay inside the memory budget dootd sets a soft heap limit of 12 MB (`debug.SetMemoryLimit`), `GOGC=50`, and returns freed memory to the kernel every 2 minutes. Setting `GOMEMLIMIT` or `GOGC` in the unit overrides this. The margin is small: most of the resident memory is the binary's own code pages, which grow with every dependency, so the Phase 6 E2E fails if RSS reaches 30 MB.
 
