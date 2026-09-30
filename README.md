@@ -5,7 +5,7 @@ A tiny, self-contained PaaS for hosting small server-rendered **Zig / C + SQLite
 One binary. No Docker, no Kubernetes, no Traefik, no extra reverse proxy. SSH in once and run one command; it prints a one-time password, and everything else happens in a web dashboard. One way to do each thing: no admin CLI, no config file.
 
 ```
-Cloudflare (proxied, Full strict) ──HTTPS──► dootd (TLS + routing + dashboard + builds + backups) ──► your apps on 127.0.0.1
+Cloudflare (proxied, Full strict) ──HTTPS──► dootd (TLS + routing + dashboard + deploys + backups) ──► your apps on 127.0.0.1
 ```
 
 ## What it does
@@ -15,7 +15,7 @@ Cloudflare (proxied, Full strict) ──HTTPS──► dootd (TLS + routing + da
 - **Only Cloudflare can reach your apps.** dootd checks that traffic comes from Cloudflare IPs and verifies Authenticated Origin Pulls with its own CA.
 - **Light isolation.** Each app runs as its own Linux user, with cgroup v2 limits on memory, CPU and process count.
 - **SQLite backups to R2 or any S3-compatible storage.** Every 3 hours and before every deploy, kept for 48 hours, one folder per app in the bucket, with one-click restore. A new app can start from a backup folder, which is also how you move to a new server.
-- **Monitoring and logs.** Host and per-app CPU and memory, request stats, live logs, and build logs.
+- **Monitoring and logs.** Host and per-app CPU and memory, request stats, live logs, and deploy logs.
 - **Updates and recovery with the same command.** Re-running the installer updates dootd and prints a new one-time password.
 
 ## Scope
