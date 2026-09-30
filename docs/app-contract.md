@@ -1,21 +1,21 @@
 # dootd App Contract
 
-These are the rules a Zig or C app must follow to be hosted on dootd. Follow them and the app deploys with one click.
+The rules a Zig or C web app must follow to be hosted on dootd, and everything needed to build one. Follow them and the app deploys with one click.
 
-Contract version: **2**. Version 1 had dootd build apps on the server; since version 2 the app's own GitHub Actions workflow builds and tests it, and dootd only deploys the result (architecture D38).
+Contract version: **2** (the app's own GitHub Actions workflow builds it; dootd only deploys the result).
 
 ---
 
 ## 1. Summary checklist
 
 - [ ] The repo has a `dootd.toml` at the root with `contract = 2` and `run`. The repo name becomes the app name (e.g. `my_blog` → `my-blog`).
-- [ ] The repo has the release workflow (`.github/workflows/release.yml`, copied from a sample, §2.2). Pushing a `v*` tag tests, builds and publishes a GitHub release.
+- [ ] The repo has the release workflow (`.github/workflows/release.yml`, §2.2). Pushing a `v*` tag tests, builds and publishes a GitHub release.
 - [ ] The release tarball holds everything the app needs at runtime: the binary and any templates or static files.
 - [ ] The app serves plain HTTP on **`127.0.0.1:$PORT`**. No TLS.
 - [ ] All SQLite files live in **`$DATA_DIR`**, and nothing else is written anywhere except `$TMPDIR`.
 - [ ] `GET <health_path>` returns 2xx once the app is ready.
 - [ ] On **SIGTERM**, the app finishes in-flight requests and exits within 10 s.
-- [ ] Logs go to **stdout/stderr**, one line per entry, and stdout is line-buffered or flushed (see §7). The app does not daemonize or fork into the background.
+- [ ] Logs go to **stdout/stderr**, one line per entry, and stdout is line-buffered or flushed (§7). The app does not daemonize or fork into the background.
 - [ ] Secrets come from environment variables, never from the repo.
 
 ---
@@ -42,36 +42,166 @@ Unknown keys are rejected, so typos fail the deploy instead of being ignored (`z
 
 ### 2.2 The release workflow
 
-Copy the workflow of the matching sample into your repo as `.github/workflows/release.yml`:
+Save this as `.github/workflows/release.yml` in the app's repo and edit the `env:` block at its top:
 
-| Language | Workflow |
-|---|---|
-| Zig | [`examples/sample-zig/.github/workflows/release.yml`](../examples/sample-zig/.github/workflows/release.yml) |
-| C (compiled with `zig cc`) | [`examples/sample-c/.github/workflows/release.yml`](../examples/sample-c/.github/workflows/release.yml) |
-
-Edit the `env:` block at its top:
-
-| Variable | Meaning | Zig example | C example |
+| Variable | Meaning | Zig | C (compiled with `zig cc`) |
 |---|---|---|---|
-| `ZIG_VERSION` | The Zig release that builds the app (C too, via `zig cc`) | `0.16.0` | `0.16.0` |
+| `ZIG_VERSION` | The Zig release that builds the app (C too) | `0.16.0` | `0.16.0` |
 | `TEST` | Your tests; they run first, and a failure publishes nothing | `zig build test` | `make test CC="zig cc"` |
 | `CLEAN` | Removes the previous architecture's build output | `rm -rf zig-out` | `rm -rf build` |
 | `BUILD` | Builds for `$TARGET` (`x86_64-linux-musl`, then `aarch64-linux-musl`) | `zig build -Doptimize=ReleaseSafe -Dtarget=$TARGET` | `make CC="zig cc -target $TARGET"` |
 | `FILES` | What goes into the tarball next to `dootd.toml` (paths kept) | `zig-out/bin/myapp templates static` | `build/myapp static` |
 
-Then release with:
+```yaml
+# Tests, builds and publishes this app as a GitHub release that dootd can
+# deploy. Release with:  git tag v1.0.0 && git push origin v1.0.0
+# A failing test, build or smoke test publishes nothing. Nothing is deployed
+# either: the release shows up in the app's Deploy menu in dootd.
+name: release
 
-```bash
-git tag v1.0.0 && git push origin v1.0.0
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # create the release
+
+env:
+  ZIG_VERSION: "0.16.0"
+  TEST: zig build test                                  # C: make test CC="zig cc"
+  CLEAN: rm -rf zig-out                                 # C: rm -rf build
+  BUILD: zig build -Doptimize=ReleaseSafe -Dtarget=$TARGET   # C: make CC="zig cc -target $TARGET"
+  FILES: zig-out/bin/myapp                              # C: build/myapp
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Zig
+        run: |
+          set -euo pipefail
+          if command -v zig >/dev/null && [ "$(zig version)" = "$ZIG_VERSION" ]; then exit 0; fi
+          dir="${RUNNER_TEMP}/zig-${ZIG_VERSION}"
+          if [ ! -x "$dir/zig" ]; then
+            read -r url sum < <(curl -fsSL https://ziglang.org/download/index.json |
+              python3 -c "import json,os,sys; e=json.load(sys.stdin)[os.environ['ZIG_VERSION']]['x86_64-linux']; print(e['tarball'], e['shasum'])")
+            curl -fsSL --retry 3 -o "${RUNNER_TEMP}/zig.tar.xz" "$url"
+            echo "$sum  ${RUNNER_TEMP}/zig.tar.xz" | sha256sum -c -
+            mkdir -p "$dir" && tar -xJf "${RUNNER_TEMP}/zig.tar.xz" -C "$dir" --strip-components=1
+          fi
+          echo "$dir" >> "$GITHUB_PATH"
+
+      - name: Test
+        run: |
+          eval "$CLEAN"
+          eval "$TEST"
+
+      - name: Build and package
+        run: |
+          set -euo pipefail
+          rm -rf dist && mkdir dist
+          for arch in amd64 arm64; do
+            case "$arch" in
+              amd64) export TARGET=x86_64-linux-musl ;;
+              arm64) export TARGET=aarch64-linux-musl ;;
+            esac
+            eval "$CLEAN"
+            eval "$BUILD"
+            pkg="$(mktemp -d)" && chmod 755 "$pkg"
+            cp dootd.toml "$pkg/"
+            for f in $FILES; do
+              mkdir -p "$pkg/$(dirname "$f")"
+              cp -R "$f" "$pkg/$f"
+            done
+            tar -czf "dist/app-linux-$arch.tar.gz" -C "$pkg" .
+            rm -rf "$pkg"
+          done
+          (cd dist && sha256sum app-linux-*.tar.gz > checksums.txt)
+          cat dist/checksums.txt
+
+      - name: Smoke test (start the amd64 package as dootd would)
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, shlex, signal, socket, subprocess, sys, tarfile, tempfile, time, tomllib, urllib.request
+          root = tempfile.mkdtemp()
+          with tarfile.open("dist/app-linux-amd64.tar.gz") as t:
+              t.extractall(root, filter="data")
+          m = tomllib.load(open(os.path.join(root, "dootd.toml"), "rb"))
+          assert m.get("contract") == 2, "dootd.toml: contract must be 2"
+          argv = shlex.split(m["run"])
+          s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
+          data, tmp = tempfile.mkdtemp(), tempfile.mkdtemp()
+          env = {"PATH": "/usr/bin:/bin", "HOST": "127.0.0.1", "PORT": str(port), "DATA_DIR": data, "TMPDIR": tmp,
+                 "DOOTD_APP": "smoke", "DOOTD_RELEASE": os.environ.get("GITHUB_REF_NAME", "smoke"), "DOOTD_CONTRACT": "2"}
+          p = subprocess.Popen([os.path.join(root, argv[0])] + argv[1:], cwd=root, env=env)
+          url = "http://127.0.0.1:%d%s" % (port, m.get("health_path", "/"))
+          for _ in range(300):
+              try:
+                  if urllib.request.urlopen(url, timeout=1).status < 400:
+                      break
+              except Exception:
+                  time.sleep(0.1)
+          else:
+              p.kill(); sys.exit("health check failed: " + url)
+          p.send_signal(signal.SIGTERM)
+          p.wait(timeout=10)
+          print("healthy at", url, "and stopped on SIGTERM")
+          PY
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
 ```
 
-The workflow runs `TEST`, builds both architectures, packages `app-linux-amd64.tar.gz` and `app-linux-arm64.tar.gz`, writes `checksums.txt`, starts the amd64 package exactly as dootd would (`HOST`, `PORT`, `DATA_DIR`, `TMPDIR`) and waits for `health_path`, and only then publishes the GitHub release. Nothing is deployed yet: the release appears in the app's **Deploy** menu in dootd, and you pick when.
+The workflow runs `TEST`, builds both architectures, packages `app-linux-amd64.tar.gz` and `app-linux-arm64.tar.gz`, writes `checksums.txt`, starts the amd64 package exactly as dootd would and waits for `health_path`, and only then publishes the release. Nothing is deployed yet: the release appears in the app's **Deploy** menu in dootd, and you pick when.
 
 - Tags must match `v*` and use only letters, digits, `.`, `_` and `-` (e.g. `v1.4.0`, `v1.4.0-rc1`); the tag becomes `DOOTD_RELEASE`.
-- `musl` targets give static binaries, so they don't depend on the server's libc. If you need something like sqlite, compile it in from source (the sqlite amalgamation `sqlite3.c`, or a `build.zig.zon` dependency), as both samples do.
-- Builds run on GitHub's runners (at least 7 GB RAM), never on your server. The free tier's 2,000 minutes a month on private repos is plenty; a sample release takes a few minutes.
-- Private repos work: dootd downloads assets with the GitHub token from its settings (*Contents: Read-only*).
+- Push the workflow file in a commit **before** the first tag: a tag pushed together with the repository's first commit does not start the workflow.
+- Builds run on GitHub's runners, never on your server. Private repos work: dootd downloads assets with the GitHub token from its settings (*Contents: Read-only*).
 - The tarball is unpacked read-only (owned by root). Anything the app writes goes in `$DATA_DIR` or `$TMPDIR`.
+
+### 2.3 SQLite in the build
+
+`musl` targets give static binaries that don't depend on the server's libc, so SQLite is compiled in from source.
+
+**C** (`Makefile`): download the amalgamation once, verify it, compile it with the app. `CC` comes from the workflow.
+
+```make
+SQLITE_VER := 3530400
+SQLITE_TGZ := sqlite-autoconf-$(SQLITE_VER).tar.gz
+CFLAGS += -O2 -std=c11 -Wall -D_GNU_SOURCE -Ithird_party
+
+build/myapp: src/main.c build/sqlite3.o
+	mkdir -p build && $(CC) $(CFLAGS) -o $@ src/main.c build/sqlite3.o -lm
+build/sqlite3.o: third_party/sqlite3.c
+	mkdir -p build && $(CC) -O2 -DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION -c -o $@ $<
+third_party/sqlite3.c:
+	mkdir -p third_party
+	curl -fsSL -o third_party/$(SQLITE_TGZ) https://sqlite.org/2026/$(SQLITE_TGZ)
+	echo "<sha256 of the tarball>  third_party/$(SQLITE_TGZ)" | sha256sum -c -
+	tar -xzf third_party/$(SQLITE_TGZ) -C third_party --strip-components=1 \
+		sqlite-autoconf-$(SQLITE_VER)/sqlite3.c sqlite-autoconf-$(SQLITE_VER)/sqlite3.h
+test: ...   # build and run your tests
+```
+
+**Zig** (0.16): add the amalgamation zip as a dependency with `zig fetch --save https://sqlite.org/2026/sqlite-amalgamation-3530400.zip`, then in `build.zig`:
+
+```zig
+const sqlite = b.dependency("sqlite", .{});
+const c = b.addTranslateC(.{ .root_source_file = sqlite.path("sqlite3.h"), .target = target, .optimize = optimize });
+const mod = b.createModule(.{
+    .root_source_file = b.path("src/main.zig"), .target = target, .optimize = optimize, .link_libc = true,
+    .imports = &.{.{ .name = "c", .module = c.createModule() }},   // @import("c") in main.zig
+});
+mod.addCSourceFile(.{ .file = sqlite.path("sqlite3.c"), .flags = &.{ "-DSQLITE_THREADSAFE=0", "-DSQLITE_OMIT_LOAD_EXTENSION" } });
+b.installArtifact(b.addExecutable(.{ .name = "myapp", .root_module = mod }));
+const tests = b.addTest(.{ .root_module = mod });
+b.step("test", "Run the tests").dependOn(&b.addRunArtifact(tests).step);
+```
 
 ---
 
@@ -88,7 +218,7 @@ The workflow runs `TEST`, builds both architectures, packages `app-linux-amd64.t
 | `DOOTD_RELEASE` | `v1.4.0` | The deployed release (its tag). |
 | `DOOTD_CONTRACT` | `2` | The contract version. |
 
-Your own env vars from the dashboard are added on top. Names starting with `DOOTD_`, and the names in the table above, are reserved. Changing env vars requires a **Restart**, not a new release.
+dootd also sets `PATH` and `LANG`, and adds your own env vars from the dashboard; nothing else is inherited (no `HOME`). Names starting with `DOOTD_`, and the names in the table above, are reserved. Changing env vars requires a **Restart**, not a new release.
 
 ---
 
@@ -102,7 +232,7 @@ Your own env vars from the dashboard are added on top. Names starting with `DOOT
   - `CF-Connecting-IP` and `CF-IPCountry`, passed through from Cloudflare.
 - WebSockets, long-polling and streamed responses (SSE) work; responses are flushed to the visitor immediately.
 - Cloudflare limits request bodies to 100 MB on the free plan, so keep uploads smaller than that.
-- While a deploy is running, visitors see a short dootd "deploying" 503 page. Expect about 1–3 s of downtime, plus however long your app takes to become healthy.
+- While a deploy is running, visitors see a short dootd "deploying" 503 page. Expect well under a second of downtime, plus however long your app takes to become healthy.
 - While your app is stopped or crashed, visitors get a dootd 503 page; if it stops answering unexpectedly, a 502.
 
 ---
@@ -114,10 +244,10 @@ Your own env vars from the dashboard are added on top. Names starting with `DOOT
 | Release dir (the unpacked tarball, current working dir) | read-only | replaced | no |
 | `$DATA_DIR` | read/write | ✅ yes | ✅ SQLite files |
 | `$TMPDIR` | read/write | ❌ may be wiped | no |
-| Everything else | no access | — | — |
+| Other apps' folders, dootd's files | no access | — | — |
 
 - Static files and templates in the tarball can be read with relative paths, because the working directory is the release dir. List them in `FILES` (§2.2).
-- **Only SQLite databases in `$DATA_DIR` are backed up** (sub-folders included). dootd finds them by their file header, whatever their name. Other files in `$DATA_DIR`, such as user uploads, are kept across deploys but **not** backed up in v1.
+- **Only SQLite databases in `$DATA_DIR` are backed up** (sub-folders included). dootd finds them by their file header, whatever their name. Other files in `$DATA_DIR`, such as user uploads, are kept across deploys but **not** backed up.
 - Don't create folders named `.pre-restore-*` in `$DATA_DIR`: dootd uses them to keep the previous databases after a restore.
 
 ---
@@ -159,7 +289,7 @@ SIGTERM (deploy / restart / stop) ──► finish requests, close DB ──► 
 
 | Limit | Default |
 |---|---|
-| Memory (`memory.max`) | 256 MB. The app is OOM-killed and restarted if it goes above this. |
+| Memory (`memory.max`) | 256 MB, no swap. The app is OOM-killed and restarted if it goes above this. |
 | CPU (`cpu.max`) | 1 core |
 | Processes/threads (`pids.max`) | 256 |
 | Open files | 4096 |
@@ -186,11 +316,12 @@ Handle SIGTERM:
 static volatile sig_atomic_t stop = 0;
 static void on_term(int s) { (void)s; stop = 1; }
 // in main: signal(SIGTERM, on_term);  then have your accept loop check `stop`
+// (e.g. poll() the listening socket with a 500 ms timeout)
 ```
 
 ### Zig
 
-The std API changes between Zig versions, so check the docs for **your `ZIG_VERSION`**. In 0.16 (the samples' version) `main` receives the environment ([`examples/sample-zig/src/main.zig`](../examples/sample-zig/src/main.zig)):
+The std API changes between Zig versions, so check the docs for **your `ZIG_VERSION`**. In 0.16 `main` receives the environment:
 
 ```zig
 pub fn main(init: std.process.Init) !void {
@@ -207,9 +338,9 @@ pub fn main(init: std.process.Init) !void {
 
 ```
 myapp/
-├── .github/workflows/release.yml   # copied from a sample (§2.2)
+├── .github/workflows/release.yml   # §2.2
 ├── dootd.toml
-├── build.zig
+├── build.zig                       # or a Makefile for C (§2.3)
 ├── build.zig.zon
 ├── src/main.zig
 ├── templates/     # in FILES; read at runtime via relative path

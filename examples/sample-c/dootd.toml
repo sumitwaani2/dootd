@@ -1,3 +1,0 @@
-contract    = 2
-run         = "build/sample-c"
-health_path = "/healthz"

@@ -249,7 +249,7 @@ func (s *Server) newAppData(ctx context.Context, in apps.Input, err error) map[s
 	if err != nil {
 		d["Errors"] = strings.Split(err.Error(), "\n")
 	}
-	// Offer the bucket's backup folders (docs/architecture.md §12.1).
+	// Offer the bucket's backup folders (docs/architecture.md).
 	fctx, fcancel := context.WithTimeout(ctx, 10*time.Second)
 	defer fcancel()
 	folders, ok, ferr := s.Backups.Folders(fctx)

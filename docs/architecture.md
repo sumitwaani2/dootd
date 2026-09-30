@@ -1,507 +1,229 @@
 # dootd Architecture
 
-This is the long-term technical reference for maintaining dootd. The rules apps must follow are in [app-contract.md](app-contract.md).
+Reference for whoever maintains dootd. The rules for hosted apps are in [app-contract.md](app-contract.md); installing and using it is in the [README](../README.md).
 
-## 1. Goals and non-goals
+## 1. What and why
 
-**Goals**
-- A single static binary. Installing it is **one command in one SSH session**; it prints a one-time password, and everything afterwards (admin account, tokens, the dashboard's own domain, apps, backups) happens in the dashboard.
-- **One way to do each thing.** There is no admin CLI, no config file to edit and no optional feature that needs its own maintenance. dootd is an internal tool for one non-technical user: ease and correctness beat features.
-- It runs on a 1 GB VPS. Target: **< 30 MB RSS when idle**, and no background daemons other than dootd itself.
-- Zig/C server-rendered apps with SQLite as the only database.
-- **dootd never builds.** Apps are built, tested and packaged by GitHub Actions in their own repositories and published as GitHub Releases (§11). dootd deploys the release: download, verify, unpack, run.
-- Cloudflare in front, **Full (strict)** TLS, and the origin reachable **only** through Cloudflare.
-- SQLite backups to any S3-compatible storage, with **RPO ≤ 3 h**.
+A single static Go binary that hosts about 5 small server-rendered Zig/C + SQLite web apps on one Ubuntu 24.04+ VPS behind Cloudflare, for **one non-technical user**.
 
-**Non-goals (by design)**
-- Multiple machines, clustering or high availability.
-- Multiple users, teams or RBAC.
-- Containers or strong multi-tenant isolation. All apps are trusted and belong to the same person.
-- Zero-downtime deploys. SQLite with a single writer makes "stop then start" the safe choice.
-- Automatic deploys on git push. Deploys happen **only when you click**.
-- Non-Cloudflare setups, such as ACME/Let's Encrypt, in v1.
-- Self-update, backups of dootd's own settings, and rebuilding a whole server from a backup. Updating means re-running the installer; a new server gets its settings typed in again and its apps' data restored from the bucket (§12).
+- **One SSH command, then only the dashboard.** The installer prints a one-time password; the admin account, tokens, dashboard domain, bucket, apps, env vars, deploys, logs, backups and restores are all in the browser. No admin CLI, no config file, no optional features; one way to do each thing (D33).
+- **dootd never builds.** Each app's GitHub Actions workflow tests and builds it and publishes a GitHub release; dootd downloads, verifies and runs it (D38).
+- **Cloudflare in front, Full (strict), origin reachable only through the user's own Cloudflare account** (IP filter + zone-level Authenticated Origin Pulls).
+- **SQLite backups** to any S3-compatible bucket, RPO ≤ 3 h.
+- **Small:** < 30 MB RSS idle, no other daemons.
 
-## 2. Environment assumptions
+Non-goals: several machines or users, containers or strong multi-tenant isolation (apps are trusted), zero-downtime deploys (stop-then-start is safe with one SQLite writer), deploys on push, non-Cloudflare setups, self-update, backups of dootd's own settings.
 
-| Item | Assumption |
-|---|---|
-| OS | Ubuntu 24.04 LTS or newer, x86_64 or arm64 |
-| Init | systemd |
-| cgroups | v2 unified hierarchy, the Ubuntu 24.04 default |
-| Size | 1–2 GB RAM, about 3–5 apps (max 5 supported and tested) |
-| Accounts | 1 dashboard user, 1 GitHub PAT, 1 Cloudflare API token, 1 S3 bucket |
-| Ports | Public: 22 (SSH) and 443 (dootd). Nothing else. |
+Assumptions: Ubuntu ≥ 24.04 (x86_64/arm64), systemd, cgroup v2, 1–2 GB RAM, ≤ 5 apps, public ports 22 and 443 only; 1 dashboard user, 1 GitHub PAT, 1 Cloudflare API token, 1 bucket.
 
-## 3. Tech stack
+## 2. Stack and code
 
-**Go**, built with `CGO_ENABLED=0` into one fully static binary for `linux/amd64` and `linux/arm64`.
-
-| Concern | Choice | Why |
-|---|---|---|
-| HTTP, TLS, reverse proxy | Go stdlib (`net/http`, `crypto/tls`, `httputil.ReverseProxy`) | Mature and built in, so no separate proxy is needed |
-| dootd's own DB | SQLite via `modernc.org/sqlite` (pure Go) | No CGO, same database technology as the apps |
-| Password hashing | `golang.org/x/crypto/argon2` (argon2id) | Current best practice |
-| Secret encryption | AES-256-GCM (stdlib) | Encrypts PAT, tokens and env vars at rest |
-| Release download | GitHub REST API (stdlib `net/http`) | Releases and assets, with the stored token for private repos |
-| S3 / R2 | `github.com/minio/minio-go/v7` | Small, works with any S3-compatible storage |
-| Compression | `github.com/klauspost/compress/zstd` | Fast, good compression ratio |
-| Release tarballs (`.tar.gz`) | stdlib `archive/tar` + `compress/gzip` | No extra dependency |
-| Config parsing | `github.com/BurntSushi/toml` | For `dootd.toml` |
-| Dashboard UI | `html/template` + one CSS file + ~100 lines of plain JS (SSE, refresh), server-rendered SVG charts later, all embedded with `go:embed` | No Node or JS build step, very light |
-
-Dependency rule: add new modules only when the stdlib would require more than about 300 lines of risky code instead.
-
-## 4. Process and component overview
+Go, `CGO_ENABLED=0`, static `linux/amd64` + `linux/arm64`. stdlib for HTTP, TLS, reverse proxy, GitHub REST, tar/gzip; `modernc.org/sqlite` (pure Go) for dootd's own DB; `x/crypto/argon2`; `minio-go` for S3/R2; `klauspost/compress/zstd`; `BurntSushi/toml` for `dootd.toml`. Dashboard: `html/template`, one CSS file, ~60 lines of vanilla JS, all `go:embed`. Rule: add a module only when the stdlib would need ~300+ lines of risky code.
 
 ```
-                    ┌──────────────────────────── dootd (one process, systemd unit) ───────────────────────────┐
- Cloudflare ─:443─► │ Edge: CF-IP filter → TLS (Origin CA cert, AOP mTLS) → Host router                        │
- (setup only) ─────► │        └ non-CF connection while setup is open → self-signed TLS → Web UI only            │
-                    │        ├─ dashboard host ─► Web UI (auth, SSE)                                            │
-                    │        └─ app host ───────► ReverseProxy ─► 127.0.0.1:$PORT ─────────► app process        │
-                    │                                                                          (own uid,       │
-                    │ Deployer ─► GitHub release download ─► verify + unpack                    own cgroup)     │
-                    │ Supervisor (start/stop/restart/backoff, log capture)                                      │
-                    │ Cloudflare client (DNS, Origin CA, AOP, IP ranges)   GitHub client (PAT, releases)        │
-                    │ Backup scheduler ─► snapshot (VACUUM INTO) ─► zstd ─► S3/R2                               │
-                    │ Metrics collector (cgroup + /proc + proxy stats)                                          │
-                    │ Store: /var/lib/dootd/dootd.db (SQLite)       Secrets: /etc/dootd/master.key              │
-                    └──────────────────────────────────────────────────────────────────────────────────────────┘
-```
-
-All components are goroutines inside one process and talk to each other through Go interfaces and channels. There is no IPC and no extra services.
-
-## 5. Code layout
-
-```
-cmd/dootd/            main: `serve` (run by systemd), `setup-host` (run by install.sh), `version`
-contrib/systemd/      dootd.service, embedded into the binary (`dootd setup-host` installs it)
+cmd/dootd/        serve (systemd), setup-host (installer), version
+contrib/systemd/  dootd.service, embedded in the binary
 internal/
-  store/              SQLite schema, migrations, queries
-  secrets/            master key, AES-GCM seal/open
-  auth/               argon2id, sessions, CSRF, login rate-limit, one-time password
-  web/                dashboard handlers, templates, static (embedded)
-  apps/               app registry: stored apps + env vars, create/update/delete, restore on add
-  hostinfo/           host summary from /proc and statfs
-  edge/               listener, CF IP filter, setup access, certificates, AOP CA, TLS config, host router, proxy, request stats, Cloudflare sync, dashboard domain
-  cloudflare/         minimal REST client (zones, DNS, origin CA, AOP, settings, IPs)
-  github/             PAT validation, repo listing, releases and asset downloads
-  artifact/           release tarball verification and safe unpacking, ELF architecture check
-  manifest/           dootd.toml parsing + validation
-  deployer/           deploy queue + pipeline (download → verify → switch → health check), releases, rollback, history
-  supervisor/         process lifecycle, restart policy, log capture
-  cgroup/             cgroup v2 create/limit/read-stats, delegation setup
-  users/              per-app system users
-  backup/             snapshot, archive, upload, retention, restore, bucket folders
-  s3/                 thin wrapper over minio-go
-  metrics/            sampling, ring buffers, rollups
-  logs/               rotating log files + live tail fan-out
-  layout/             paths under /var/lib/dootd
-  testenv/            the DOOTD_TEST_* overrides used by the end-to-end tests (§18)
+  store/          SQLite (WAL, single writer), embedded migrations
+  secrets/        master.key, AES-256-GCM seal/open with purpose as associated data
+  auth/           argon2id, sessions, CSRF, rate limit, one-time password
+  web/            dashboard handlers, templates, static, SSE, SVG charts
+  apps/           app registry (apps + sealed env), create/update/delete, restore on add
+  edge/           listener, IP filter, setup address, certificates, AOP, router, proxy, Cloudflare sync
+  cloudflare/     minimal REST client
+  github/         PAT check, repos, releases, asset downloads
+  artifact/       tarball verification, safe unpack, ELF check
+  manifest/       dootd.toml parsing
+  deployer/       queue + pipeline, releases, rollback, history
+  supervisor/     process lifecycle, restart policy, health check
+  cgroup/ users/  cgroup v2 tree and limits; per-app system users
+  backup/ s3/     snapshots, archives, upload, retention, restore, bucket folders
+  metrics/ logs/  sampling + rollups; rotating logs + live tail
+  layout/ hostinfo/ app/ buildinfo/
 ```
 
-## 6. Filesystem layout
+All components are goroutines in one process (the systemd unit), talking through Go interfaces. dootd runs as root (port 443, users, cgroups, chown); apps never do.
+
+## 3. On disk
 
 ```
-/usr/local/bin/dootd                      binary
-/etc/dootd/master.key                     32 random bytes, 0600 root; encrypts secrets in DB
+/usr/local/bin/dootd
+/etc/dootd/master.key                  32 random bytes (hex), 0600, never overwritten
 /etc/systemd/system/dootd.service
-/var/lib/dootd/
-  dootd.db                                dootd state (every setting lives here; there is no config file)
-  setup/{cert.pem,key.pem}                self-signed certificate for the setup address (§8.1)
-  certs/<hostname>/{cert.pem,key.pem}     Origin CA certs (0600)
-  aop/{ca.pem,ca.key,client.pem,client.key}  dootd's private AOP CA + client cert
-  downloads/<app>/<deployment-id>/        temporary download + unpack workspace (emptied at startup)
-  apps/<app>/
-    releases/<tag>/                       unpacked release tarball (root-owned, read-only to app)
-    current -> releases/<tag>
-    data/                                 DATA_DIR (0700, app user)
-    tmp/                                  TMPDIR  (0700, app user)
-    logs/app.log[.1..3]                   runtime logs (rotated)
-    logs/builds/<deployment-id>.log       deploy logs
-  backups/staging/                        temporary snapshots and downloads (emptied at startup)
-  backups/local/<app>/                    newest archives (<time>-<kind>-<id>.tar.zst)
-  deleted/<app>-<time>/data/              data kept when an app is deleted
+/var/lib/dootd/                        0711
+  dootd.db                             all state and settings
+  setup/{cert,key}.pem                 self-signed cert of the setup address
+  certs/<host>/{cert,key}.pem          Origin CA certs (0600)
+  aop/{ca,client}.{pem,key}            dootd's AOP CA (RSA 3072, 10 y) + client cert (RSA 2048, 5 y)
+  downloads/<app>/<deployment>/        download + unpack workspace (emptied at start)
+  apps/<app>/releases/<tag>/           unpacked release, root-owned, read-only for the app
+  apps/<app>/current -> releases/<tag>
+  apps/<app>/data/  tmp/               DATA_DIR, TMPDIR (0700, app user)
+  apps/<app>/logs/app.log[.1-3]        runtime log (10 MB × 3)
+  apps/<app>/logs/builds/<id>.log      deploy logs (last 20)
+  backups/staging/  backups/local/<app>/   temp snapshots; newest archives
+  deleted/<app>-<time>/data/           data kept when an app is deleted
 ```
 
-The last **3 releases** are kept for instant rollback. Older ones are deleted after a successful deploy.
-
-## 7. Data model (dootd.db)
-
-| Table | Key columns |
+| Table | Content |
 |---|---|
-| `settings` | key, value (plain or encrypted blob). Holds `dashboard_domain`, the one-time password hash and expiry (`setup_password`), GitHub PAT*, CF token*, S3 endpoint/region/bucket/keys*, Cloudflare IP ranges |
-| `users` | id (always 1), email, password_hash (argon2id) |
-| `sessions` | id_hash (SHA-256 of the token), csrf, created_at, last_seen, ip, user_agent, setup (1 = signed in with the one-time password) |
-| `apps` | name, repo, domain (unique), port (unique), memory_max, cpu_max, pids_max, created_at |
-| `app_env` | app, name, value* |
-| `deployments` | id, app, kind (deploy/rollback), status (queued/building/deploying/succeeded/failed), release_id, git_sha, error, created/started/finished_at |
-| `releases` | app, id (the tag), subject (release name), sha256 (of the tarball), run (JSON argv), health_path, created_at (only kept releases) |
-| `app_state` | app, desired_state (running/stopped) |
-| `backups` | id, app, kind, status (running/ok/failed), object_key, local_path, size, sha256, files, release_id, error, created_at, finished_at |
-| `edge_certs` | hostname, zone_id, cf_cert_id, not_after, issued_at |
-| `edge_zones` | zone_id, name, ssl_mode, aop_cert_id, aop_cert_serial, aop_active, checked_at |
-| `metrics_1m` | scope (`_host`, `_dootd` or app), ts (minute), cpu, mem, mem_limit, swap, load1, disk_used, disk_total, pids, io_read, io_write, req, req_5xx (per minute), p50, p95 (ms, NULL = no requests), oom |
-| `schema_migrations` | version |
+| `settings` | `dashboard_domain`, `dashboard_reached`, `setup_password` (argon2id hash, expiry, used), GitHub token*, Cloudflare token*, `s3_config`*, Cloudflare IP ranges |
+| `users` | id 1 only: email, argon2id hash |
+| `sessions` | SHA-256 of the token, csrf, created/last seen, ip, user agent, `setup` flag |
+| `apps`, `app_env` | name, repo, domain, port, limits; env values* |
+| `app_state` | desired state (running/stopped) |
+| `deployments`, `releases` | history (kind, status, release, error, times); kept releases (tag, sha256, run argv, health path) |
+| `backups` | kind, status, object key, local path, size, sha256, release, error |
+| `edge_certs`, `edge_zones` | per host: zone, Cloudflare cert id, expiry; per zone: SSL mode, AOP cert id/serial, AOP enforced |
+| `metrics_1m` | 7 days of 1-minute rollups per scope (`_host`, `_dootd`, app) |
 
-`*` = encrypted with AES-256-GCM using `master.key`. `dootd.db` uses WAL mode, and dootd uses a single writer connection. (Columns of removed features stay in place, unused: `apps.type/branch/path/build_memory/build_timeout`, `releases.git_sha/branch/subdir/zig_version`.)
+`*` sealed with AES-256-GCM (`master.key`), purpose-bound (`settings:cloudflare_token`, `app_env:<app>:<NAME>` …), never shown in the UI. Migrations are numbered, one transaction each; a failing one rolls back and dootd refuses to start; a schema newer than the binary is refused naming both versions. dootd refuses to start if `master.key` is group/other-accessible or malformed. Columns of removed features stay unused (`apps.type/branch/path/build_*`, `releases.git_sha/branch/subdir/zig_version`).
 
-## 8. Install, first sign-in, updates
+## 4. Install, setup address, updates
 
-The whole SSH part is one command:
+`install.sh` (the only SSH step) asks nothing and installs no packages: checks Ubuntu ≥ 24.04, systemd, cgroup v2, CPU; downloads `dootd-linux-<arch>` + `checksums.txt` from the latest release (or `DOOTD_VERSION=vX.Y.Z`), verifies SHA-256 and that the binary runs (changes nothing otherwise); stops dootd, installs the binary, runs `dootd setup-host`: creates the directories and `master.key`, writes and enables the embedded systemd unit (D28), runs migrations, stores a **new one-time password** (argon2id, 24 h), starts dootd and prints the setup address `https://<public IPv4>`, the password and the dashboard domain if any. Re-running it is the **update** (keeps everything; apps restart) and the **recovery** path (forgotten password, broken domain). dootd never updates itself (D35).
 
-```bash
-curl -fsSL https://github.com/sumitwaani2/dootd/releases/latest/download/install.sh | sudo bash
-```
+Unit essentials: `ExecStart=dootd serve`, `Restart=always` with growing delay (2 s → 60 s, never gives up), `Delegate=yes`, `KillMode=mixed`, `TimeoutStopSec=45s`, `LimitNOFILE=65536`.
 
-`install.sh` asks no questions and installs no system packages (nothing is built on the server). It:
-1. Checks Ubuntu ≥ 24.04, systemd, cgroup v2 and the CPU architecture, and changes nothing if one is missing.
-2. Downloads `dootd-linux-<arch>` and `checksums.txt` from the latest GitHub release, verifies the SHA-256 and checks that the binary runs (`dootd version`). On a mismatch nothing is installed.
-3. Stops dootd if it is running, moves the new binary into place and runs `dootd setup-host`, which:
-   - creates `/etc/dootd` (0700) and `/var/lib/dootd` (0711) and generates `master.key` (never overwritten);
-   - writes the systemd unit embedded in the binary (`contrib/systemd/dootd.service`) and enables it;
-   - opens `dootd.db` (running migrations) and stores a **new one-time password** (argon2id hash, valid 24 h);
-   - starts dootd and prints the setup address `https://<public IPv4>` and the one-time password. If a dashboard domain is already set up, it prints that too.
+**Setup address** (D34): before a dashboard domain works, the dashboard is served on `https://<server IP>` with the self-signed cert.
+- Setup is **open** while the dashboard domain is not *ready*, or while an unexpired one-time password exists that has not been used to set up the account. The domain is *ready* when its Origin CA cert is installed, AOP for its zone is enforced or rolling out (§5.3), and either a request for it arrived through Cloudflare with dootd's AOP client cert (remembered per domain) or the zone is active and its SSL mode is known to be Full/Full (strict) (D41). The settings and home pages say what is missing.
+- While open, non-Cloudflare connections pass the IP filter as *setup connections*: self-signed cert whatever the SNI, no client cert, **only the dashboard** (never apps), client IP = TCP peer (`CF-Connecting-IP` ignored), CSRF origin = `https://<Host>`.
+- While the dashboard domain is ready, the setup address accepts only the one-time password, never the admin password.
+- When setup closes, non-Cloudflare connections are refused before TLS again; a request on a still-open setup connection gets a page linking to the dashboard domain.
+- Signing in with the one-time password (email empty) gives a `setup` session that can only set the admin email and a password (≥ 12 chars); saving consumes the password and revokes all sessions. First-run order: Cloudflare token → dashboard domain → GitHub token, bucket → apps; the home page lists what is missing.
 
-Running the same command again is how dootd is **updated** (it installs the latest release and keeps every setting and app) and how access is **recovered** (forgotten password, broken dashboard domain): every run prints a fresh one-time password. `DOOTD_VERSION=vX.Y.Z` installs a specific release instead of the latest (e.g. a release candidate).
+## 5. Edge
 
-### 8.1 Setup address and one-time password
+### 5.1 Listener and IP filter
+Only `:443` (no `:80`; the user enables Cloudflare's *Always Use HTTPS*). A custom listener closes connections from outside Cloudflare's ranges **before TLS** (except setup connections). Ranges come from `/client/v4/ips` at start and every 24 h, the last good list is saved, a compiled-in list is the fallback, and implausible lists are refused. Rejections are counted and logged at most once a minute. Errors `net/http` reports before a request (failed handshakes) are logged: the first at once, then a count per minute (D43). Timeouts: read header 10 s, idle 120 s, no write timeout.
 
-Before a dashboard domain exists there is no way to reach the dashboard through Cloudflare, so dootd has a **setup address**: `https://<server IP>`, served with a self-signed certificate (`/var/lib/dootd/setup/`, created on first start). The browser warns about the certificate once.
+### 5.2 Origin certificates (Full strict)
+Per hostname (dashboard + each app domain): local ECDSA P-256 key + CSR → Cloudflare Origin CA (`origin-ecc`, 5475 days) with the API token. Chosen by SNI; **unknown SNI fails the handshake**; TLS 1.2+, h2 and http/1.1. Sync (at start, every 6 h, after changes, *Sync now*) re-issues certs with < 30 days left and revokes replaced ones. The zone SSL mode is checked, never changed automatically; the dashboard warns and offers *Set Full (strict)*.
 
-- **Setup is open** while no dashboard domain is ready, **or** while an unexpired one-time password exists that has not been used to set up the account. A dashboard domain is *ready* once dootd holds its Origin CA certificate, AOP is enforced for its zone (§9.3, including the rollout wait), and either a request for it has arrived through Cloudflare with our AOP client certificate (remembered per domain), or the zone is active and its SSL/TLS mode is known to be Full or Full (strict) (D41). The settings and home pages say which of these is still missing.
-- While setup is open, a connection from outside Cloudflare's ranges is let through the IP filter, marked as a *setup connection*, and gets the self-signed certificate without a client-certificate requirement. Every request on it goes to the dashboard, whatever its `Host`; **apps are never served on a setup connection**. Connections from Cloudflare addresses are handled exactly as before (§9).
-- On a setup connection the client IP is the TCP peer; `CF-Connecting-IP` is ignored (it could be forged). CSRF checks compare `Origin` with `https://<Host>` of the request.
-- While a dashboard domain is ready, the setup address accepts **only the one-time password**, never the admin password, so the admin password is never exposed outside Cloudflare.
-- When setup closes, new setup connections are refused before TLS again, and a request still arriving on an open one gets a page linking to the dashboard domain.
+### 5.3 Authenticated Origin Pulls
+The IP filter only proves "some Cloudflare account"; zone-level AOP with dootd's own CA proves "yours" (D6). Per zone: upload the client cert + key (`origin_tls_client_auth`), turn zone AOP on, wait until Cloudflare reports the cert `active` (≤ 3 min per sync), then **wait 10 more minutes** for Cloudflare's edge to roll it out (D43; enforcing earlier gave 2–5 % 520s for ~5 minutes) before requiring `RequireAndVerifyClientCert` for hosts in that zone. The same wait follows any re-upload or re-enable; a timer syncs when it ends; during it no client cert is requested (verifying "if given" would reject Cloudflare's shared certificate). The enforced state is saved in `edge_zones` and applies at once after a restart, and stays on if the API is merely failing (D16). If someone deletes the cert or disables AOP in Cloudflare, the next sync restores it. The client cert is renewed 60 days before expiry (upload, wait active, delete the old one). AOP cannot be turned off.
 
-**Signing in with the one-time password** (email left empty) creates a session marked `setup`. That session can only open *Set up your account*: the admin email and a new password (≥ 12 characters). Saving it replaces the admin credentials, consumes the one-time password, revokes every session and signs the user in normally. The first-run order is then: Settings → Cloudflare token → dashboard domain → (optional) GitHub token and bucket → add apps. The home page lists whatever is still missing.
+### 5.4 Router and proxy
+`Host` (lowercased, port removed) → dashboard, an app's `httputil.ReverseProxy` to `127.0.0.1:<port>`, or 404; `Host` must equal the SNI or 421 (D17). The proxy replaces `X-Forwarded-For`/`X-Real-IP` with `CF-Connecting-IP`, sets `X-Forwarded-Proto: https` and `X-Forwarded-Host`, keeps `Host`, flushes immediately (`FlushInterval: -1`; SSE, long-poll, WebSockets work), dials with a 5 s timeout. Deploying → 503 (`Retry-After: 3`), starting → 503, stopped/crashed/never deployed → 503, proxy error → 502; dootd pages carry `X-Dootd-Page` and `no-store`. Per-app counters (requests, status classes, latency histogram) feed monitoring.
 
-### systemd unit (essentials)
+### 5.5 Cloudflare token, DNS, domains
+Token permissions: Zone Read, DNS Edit, SSL and Certificates Edit, Zone Settings Edit; saving it verifies it, lists readable zones and names missing permissions. For each domain: zone by longest suffix (a domain in no zone is refused when saved), proxied `A` (+ `AAAA` if the server has IPv6) created or updated, conflicting CNAMEs or duplicates reported, never touched. Edge sync is best effort per host (D18). Public IPv4/IPv6 are detected via `https://www.cloudflare.com/cdn-cgi/trace`. The dashboard domain (needs the token, can't be an app's domain) is routed at once and set up in the background; replacing it deletes the old DNS records and revokes its cert; sessions are per domain. Deleting an app or changing its domain cleans up the same way.
 
-```ini
-[Unit]
-StartLimitIntervalSec=0   # never give up; the delay grows to 60 s (RestartSteps)
-[Service]
-ExecStart=/usr/local/bin/dootd serve
-Restart=always
-RestartSec=2s
-RestartSteps=5
-RestartMaxDelaySec=60s
-Delegate=yes              # dootd owns its cgroup subtree
-KillMode=mixed            # SIGTERM to dootd only (it stops apps gracefully); SIGKILL leftovers after the timeout
-TimeoutStopSec=45s
-LimitNOFILE=65536
-```
+## 6. Apps and processes
 
-dootd runs as **root**. It needs this to bind :443, create users, manage cgroups and chown app directories. App processes never run as root.
+- **Names** come from the repository name: lowercased, `_`/`.` → `-`, 2–24 chars `a-z0-9-`, starting with a letter (D36). One repo = one app. Ports are assigned once from 20001 up.
+- **Users:** `dootd-<app>` (system, no home, `nologin`); `data/` and `tmp/` 0700 owned by it; releases root-owned; other apps' and dootd's files unreadable.
+- **cgroups** (D2): dootd owns `system.slice/dootd.service/` (`Delegate=yes`), moves itself into `supervisor/`, apps run in `apps/<app>/` with `memory.max` (default 256M), `memory.swap.max=0`, `memory.zswap.max=0`, `cpu.max` (1 core), `pids.max` (256); no `memory.high` (D11); `RLIMIT_NOFILE` 4096 via prlimit. Processes start inside their cgroup (`CLONE_INTO_CGROUP`) with the app's uid/gid, `Setpgid`, `Pdeathsig=SIGKILL`, cwd = current release, a clean env (`PATH`, `LANG`, contract vars, user env). Killing = SIGKILL every PID in the cgroup until empty, **never `cgroup.kill`** (D10: after it was written once, later `CLONE_INTO_CGROUP` children died instantly). `memory.events` OOM kills are recorded.
+- **Supervisor:** `stopped → starting → running → stopping`, plus `crashed`, `deploying`. Running = TCP connect then `GET health_path` 2xx/3xx within 30 s. Stop = SIGTERM, 10 s, kill the cgroup. Restarts with backoff 1 s → 60 s; 5 exits in 5 min → `crashed` until the user restarts. At start, apps with desired state `running` start one at a time. A dootd restart restarts all apps (seconds of downtime, accepted).
+- **Logs:** stdout/stderr lines get a timestamp and stream tag → `app.log` (10 MB × 3) + a 1000-line ring buffer streamed to the dashboard over SSE; lines > 16 KB are split.
+- **Config changes** (env, limits) are stored at once and apply on restart/deploy; the page says "restart needed" (D20). Env names `PORT`, `HOST`, `DATA_DIR`, `TMPDIR`, `DOOTD_*` are reserved.
+- **Delete** (type the name): refused while deploying; stop, remove cgroup, rows, releases, logs, DNS records and cert, user; `DATA_DIR` is kept in `deleted/` unless unticked (D21); backups are kept unless "also delete its backups" is ticked.
 
-## 9. Edge: TLS, Cloudflare-only access, and routing
+## 7. Releases and deploys
 
-### 9.1 Listener and IP filter
-- dootd listens only on `:443`. There is no `:80`. Enable Cloudflare's "Always Use HTTPS" instead.
-- Errors that `net/http` reports for a connection before any request (mostly failed TLS handshakes, e.g. Cloudflare connecting without the AOP client certificate) are logged at most once a minute, with a count and the latest message.
-- A custom `net.Listener` checks the TCP peer address against Cloudflare's IPv4 and IPv6 ranges. **Connections from any other address are closed before the TLS handshake** (the only exception is the setup address while setup is open, §8.1).
-- The ranges are fetched from `GET /client/v4/ips` at startup and every 24 h, with a list compiled into the binary as a fallback. The last good list is stored in `settings` and used on the next start. An empty or implausible list (e.g. a /4) is refused, so a bad response can neither lock Cloudflare out nor open the port to everyone.
-- Rejected connections are counted (Settings → Cloudflare) and logged at most once a minute.
-
-### 9.2 Origin certificates (Full strict)
-- For every hostname (the dashboard plus each app domain), dootd generates an ECDSA P-256 key and a CSR locally. It then calls the Cloudflare **Origin CA** API (`POST /certificates`, `request_type=origin-ecc`, validity 5475 days).
-- The API token authenticates this call. Legacy Origin CA service keys are deprecated and removed after 30 Sep 2026 ([Cloudflare docs](https://developers.cloudflare.com/fundamentals/api/get-started/ca-keys)).
-- `tls.Config.GetConfigForClient` chooses the certificate by SNI. **Unknown SNI means the handshake fails.** TLS 1.2+ with h2 and http/1.1.
-- Keys and certificates live in `certs/<host>/` (0600); the Cloudflare certificate ID is in `edge_certs`. The sync (at startup, every 6 h, after a change, and on *Sync now* in Settings) re-issues any certificate with less than 30 days left and then revokes the replaced one.
-- The zone's SSL mode is **checked, not forced**. If it isn't `strict`, the dashboard shows a warning and a "Set to Full (strict)" button, because the setting affects every hostname in the zone.
-
-### 9.3 Authenticated Origin Pulls (mTLS)
-The IP filter alone only proves the traffic comes from *someone's* Cloudflare account. **Zone-level AOP with our own CA** proves it comes from *yours*:
-- On first run, dootd creates a private CA (RSA 3072, 10 years) and a client certificate signed by it (RSA 2048, 5 years), stored in `aop/`. RSA is used because it is what Cloudflare documents for AOP uploads.
-- For each zone it serves, dootd uploads the client certificate and key through the zone-level AOP API (`origin_tls_client_auth`) and turns the zone setting `tls_client_auth` **on** ([Cloudflare docs](https://developers.cloudflare.com/ssl/origin-configuration/authenticated-origin-pull/set-up/zone-level/)).
-- The TLS config uses `ClientAuth: RequireAndVerifyClientCert` with dootd's CA as `ClientCAs`, **per zone and only once Cloudflare reports our certificate `active` and AOP enabled, plus 10 minutes** (D43). Enforcing earlier would break the site: Cloudflare's edge servers pick up a newly uploaded certificate gradually. On the real VPS, for almost 5 minutes some of them connected without a certificate or with Cloudflare's shared origin-pull certificate, and those requests failed with error 520. The same wait applies whenever a sync has to upload the certificate again or turn AOP back on. Meanwhile no client certificate is asked for (verifying "if given" would reject the shared one) and the IP filter stays on; a timer syncs again when the wait is over.
-- The enforcement state is saved in `edge_zones`, so after a restart it applies immediately, even if the Cloudflare API is unreachable. If a sync fails only because the API is down, enforcement stays on.
-- If someone disables AOP or deletes our certificate in the Cloudflare dashboard, the next sync re-uploads and re-enables it (otherwise the origin would reject all traffic).
-- dootd renews the client certificate 60 days before it expires: it uploads the new one, waits until it is active, then deletes the old one.
-- AOP cannot be turned off, and the IP filter always stays on.
-
-### 9.4 Router and proxy
-- The `Host` header (lowercased, port removed) is looked up in an in-memory map `domain → app`. This map is rebuilt whenever apps change.
-  - Dashboard domain → web UI handler.
-  - App domain → that app's `httputil.ReverseProxy` → `http://127.0.0.1:<port>`.
-  - Anything else → `404`.
-  - `Host` must equal the TLS SNI, otherwise `421 Misdirected Request`. Without this, a client could use the TLS settings of a zone without AOP to reach an app in a zone with AOP.
-- The proxy sets `X-Forwarded-For` and `X-Real-IP` from `CF-Connecting-IP` (replacing anything the client sent), `X-Forwarded-Proto: https` and `X-Forwarded-Host`, keeps the original `Host`, and flushes responses immediately (streaming/SSE).
-- Timeouts: read header 10 s, idle 120 s, no overall write timeout (so long-polling and WebSockets work). Upstream dial timeout is 5 s.
-- Deploying → 503 "Deploying" (`Retry-After: 3`); starting → 503 "Starting"; stopped/crashed/never deployed → 503 "App not running"; proxy error → 502. Pages carry `X-Dootd-Page` and `Cache-Control: no-store`.
-- Each request updates in-memory counters per app (count, status class, latency histogram), which are used for metrics.
-
-### 9.5 Cloudflare API token permissions
-Scope: the zones you use, or all zones.
-- Zone → Zone → Read
-- Zone → DNS → Edit
-- Zone → SSL and Certificates → Edit (Origin CA + AOP certs)
-- Zone → Zone Settings → Edit (enable AOP, read and set the SSL mode)
-
-When an app's domain is set, dootd finds the zone (longest suffix match), then creates or updates a **proxied** `A` record, plus an `AAAA` record if the server has IPv6. Next it issues the certificate and makes sure AOP is set up for the zone. It refuses to touch a conflicting `CNAME` or duplicate records and reports them instead.
-
-The token is entered in Settings → Cloudflare, verified (the readable zones are listed) and stored sealed (`settings:cloudflare_token`).
-
-### 9.6 Dashboard domain and public IPs
-- The dashboard domain is set in Settings (it needs the Cloudflare token first) and stored in `settings:dashboard_domain`. Saving it re-routes immediately and starts a sync in the background: DNS record, Origin CA certificate, AOP for its zone. The settings page shows the progress. A domain used by an app is refused, and an app cannot use the dashboard domain. Replacing it removes the old domain's DNS records and revokes its certificate; sessions are per domain, so the user signs in again on the new one.
-- The public IPv4 and IPv6 are always detected (`https://www.cloudflare.com/cdn-cgi/trace`, over IPv4 and IPv6); no IPv6 means no AAAA records. There is nothing to configure.
-
-### 9.7 Testing without Cloudflare
-`scripts/e2e/e2etool cfmock` is a fake Cloudflare API (its own Origin CA root; it exposes the uploaded AOP client certificate the way Cloudflare's edge would present it). The E2E scripts add `198.18.0.10` to `lo` and list `198.18.0.0/15` in the fake `/ips`, so requests from it count as Cloudflare, while requests to `127.0.0.1` use the setup address. `DOOTD_TEST_CLOUDFLARE_API` and `DOOTD_TEST_PUBLIC_IPV4/IPV6` point dootd at the fake (§18).
-
-## 10. Apps: users, cgroups, supervision
-
-### 10.1 Users
-- Each app gets its own system user `dootd-<app>` (`useradd --system --no-create-home --shell /usr/sbin/nologin`).
-- Its `data/` and `tmp/` directories are owned by that user with mode 0700. Releases are owned by root and world-readable. Other apps' directories cannot be read.
-
-### 10.2 cgroup v2 tree
-Because of `Delegate=yes`, dootd owns `/sys/fs/cgroup/system.slice/dootd.service/`. cgroup v2 doesn't allow processes in inner nodes, so dootd first moves itself into a leaf:
+A release (D39, D40) has `app-linux-amd64.tar.gz`, `app-linux-arm64.tar.gz` (`dootd.toml` at the root, the binary, runtime files) and `checksums.txt`. Tags become directory names: `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`. The app page lists the 10 newest non-draft releases (`/repos/<o>/<r>/releases?per_page=10`, cached 1 min, latest preselected); dootd deploys **only on click** (D4). One deployment runs at a time host-wide; others queue.
 
 ```
-dootd.service/
-  supervisor/            dootd itself
-  apps/<app>/            runtime: memory.max, memory.swap.max=0, memory.zswap.max=0, cpu.max, pids.max
+1. Tag already kept in releases/<tag>/ → use it (skip 2–5)
+2. GitHub API: release by tag → asset for this CPU + checksums.txt      [app keeps serving]
+3. Download both (stored token; redirect to the signed asset URL without the token; size limit), check SHA-256
+4. Unpack into downloads/ (no absolute paths, "..", devices, escaping symlinks; bounded size),
+   validate dootd.toml, check `run` is an executable ELF for this CPU
+5. Move to apps/<app>/releases/<tag>/ (root-owned)
+── downtime (measured 60–220 ms plus the app's start) ──
+6. Router: deploying (503)   7. Stop old   8. Pre-deploy backup (snapshot; upload in background)
+9. Atomic swap of `current`   10. Wipe tmp/, start, health check
+11a. Healthy → serve, succeeded, prune to 3 kept releases
+11b. Unhealthy → stop, point `current` back, start the old release if it was running, delete the new one, failed
+     (the DB is not restored; the UI offers the pre-deploy backup)
 ```
 
-- Processes start directly inside their cgroup using `SysProcAttr{CgroupFD, UseCgroupFD: true}` (clone3 `CLONE_INTO_CGROUP`), with `Credential{Uid,Gid}`, `Setpgid`, and `Pdeathsig: SIGKILL`.
-- On stop, if the process tree hasn't exited after the grace period, dootd SIGKILLs every PID listed in the cgroup, repeating until no new ones appear, so no orphans are left behind. When the main process exits for any reason, the rest of its cgroup is killed the same way.
-- dootd does **not** use `cgroup.kill`. On Ubuntu 24.04 (kernel 6.17) we found that after `cgroup.kill` has been written once, every new child placed into that cgroup with `CLONE_INTO_CGROUP` is killed immediately, which breaks restarts (verified in the Phase 1 E2E run).
-- No `memory.high`: with swap disabled for apps it cannot reclaim anything and only stalls the app. A clean OOM kill at `memory.max` followed by a restart is more predictable.
-- Other rlimits: `RLIMIT_NOFILE` is set per app with `prlimit`. The app gets a clean environment (only `PATH`, `LANG`, the contract variables and user env vars), not dootd's.
-- `memory.events` is watched, and OOM kills show up in the app's event log.
+A failure in 2–5 never touches the running app, and errors name the cause (missing asset, checksum, no `checksums.txt`, wrong CPU, unsafe path, bad `dootd.toml`). **Rollback** switches to a kept release without downloading; deploying an older tag that isn't kept downloads it again; a kept release whose files are missing is downloaded again. After a crash or restart, unfinished deployments are marked failed and `downloads/` is emptied; a switch that started (6–11) always completes. Release metadata lives in `releases`, so restarts don't re-read `dootd.toml`. GitHub: a fine-grained PAT with *Contents: Read-only* (public repos work without), sent only to `api.github.com`.
 
-### 10.3 Supervisor
-- A state machine per app: `stopped → starting → running → stopping → stopped`, plus `crashed` and `deploying`.
-- `starting` becomes `running` only when the health check passes: TCP connect, then `GET health_path` returns 2xx/3xx, retried for up to 30 s.
-- Restart policy: exponential backoff from 1 s up to 60 s. After 5 exits within 5 min the app becomes `crashed`, and you restart it manually.
-- On dootd start, every app whose `desired_state=running` is started, one at a time.
-- dootd restarts, including updates, **restart all apps** (a few seconds of downtime). That's an accepted trade-off.
+## 8. Backups and restore
 
-### 10.4 Logs
-- stdout and stderr go through pipes into `logs/app.log`. Each line gets a timestamp and stream tag, and files rotate at 10 MB with 3 kept.
-- There is also an in-memory ring buffer (last 1000 lines) per app. The dashboard streams live logs over **SSE** from this buffer.
-- Deploy logs are stored per deployment, and the last 20 per app are kept.
-
-## 11. Releases and the deploy pipeline
-
-dootd does not compile anything (D38). Each app repository carries a workflow (templates: `examples/sample-{zig,c}/.github/workflows/release.yml`) that, when a `v*` tag is pushed, runs the app's tests, builds static binaries with Zig for `x86_64-linux-musl` and `aarch64-linux-musl`, and publishes a GitHub release with:
-
-| Asset | Content |
+| Policy (fixed) | |
 |---|---|
-| `app-linux-amd64.tar.gz`, `app-linux-arm64.tar.gz` | `dootd.toml` at the root, the binary named by `run`, and the files the app reads at runtime (templates, static) |
-| `checksums.txt` | `sha256sum` lines for both tarballs |
+| Schedule | every 3 h aligned to UTC (00:00, 03:00 …), before every deploy/rollback, *Back up now* |
+| Retention | 48 h, the newest backup of each app always kept (done by dootd, not bucket rules) |
+| Local copies | newest 2 per app (D22); not-yet-uploaded ones kept until the retention ends |
+| Bucket | `<app>/<UTC time>-<kind>-<id>.tar.zst` (D37); S3 settings sealed, saved only after a test upload/read/delete; empty secret keeps the old one; path-style SigV4 |
 
-A failing test or build publishes nothing. GitHub's free tier (2,000 minutes a month on private repos) covers hundreds of releases.
+- **What:** every file under `DATA_DIR` starting with `SQLite format 3\0` (sub-folders included), skipping `-wal`/`-shm`/`-journal` and `.pre-restore-*`.
+- **Snapshot:** `VACUUM INTO` with `busy_timeout=10000` while the app runs, then `PRAGMA quick_check`; sidecar files dootd creates are chowned back to the app user.
+- **Archive:** tar (first `manifest.json`: app, kind, time, release, dootd version, path/size/SHA-256 per DB) + zstd; its SHA-256 goes into `backups`.
+- **Upload:** 3 attempts with backoff; scheduled/manual uploads finish before returning, pre-deploy ones in the background; failed uploads are retried after every scheduled run and when S3 settings are saved.
+- **Restore** (D23): refuse while a deployment is queued/running; take the local copy if its SHA-256 matches, else download and check; unpack to staging and verify every file (size, SHA-256, safe paths, `quick_check`) — **any failure stops here, the app untouched**; stop the app, move the current DBs and sidecars to `DATA_DIR/.pre-restore-<time>/` (unique per restore, last 2 kept), copy the restored files in (fsync, rename, chown), start again if it was running.
+- **Add app** lists the bucket's folders, preselects the app's own name, and restores the newest archive of the chosen folder into the empty `DATA_DIR` before the first deploy (a failure leaves the app created with an error shown). Moving servers = install, re-enter the settings, add each app with its folder; shut the old server down first.
+- **Badges:** app and home pages show *backup failed* when the latest backup failed or isn't uploaded (a retry in progress doesn't hide an earlier problem) and warn when no bucket is set. dootd's own settings are not backed up.
 
-Only **one deployment runs at a time** across the server; others wait in a queue and the UI shows them as queued.
+## 9. Monitoring
 
-```
-Deploy <tag> clicked (the app page lists the 10 newest releases, latest preselected)
- 1. If releases/<tag>/ is still kept on the server: use it (steps 2–5 skipped)
- 2. GitHub API: release by tag → asset app-linux-<arch>.tar.gz + checksums.txt   [app keeps serving]
- 3. Download both (asset API, stored token, size limit), check the SHA-256
- 4. Unpack into downloads/<app>/<id>/ (no absolute paths, "..", devices or escaping
-    symlinks; bounded size), validate dootd.toml, check that `run` is an executable
-    ELF binary for this CPU
- 5. Move → apps/<app>/releases/<tag>/ (root-owned, read-only to the app)
- ── downtime starts ──
- 6. Router marks app `deploying` (503 page)
- 7. Stop old process (SIGTERM, 10 s, then SIGKILL the cgroup)
- 8. Pre-deploy backup of DATA_DIR SQLite files (snapshot local; upload async)
- 9. Swap `current` symlink atomically (rename)
-10. Wipe tmp/, start new process, health check
- ── downtime ends ──
-11a. Healthy → route traffic, mark deployment `succeeded`, prune to 3 kept releases
-11b. Unhealthy → stop new, point `current` back, start old release, mark `failed`
-     (DB is NOT restored automatically; UI offers "Restore pre-deploy backup")
-```
+Every 10 s: host (`/proc/stat`, `/proc/meminfo`, `/proc/loadavg`, `statfs`), dootd itself (`/proc/self`), each app (cgroup `cpu.stat`, `memory.current`, `pids.current`, `io.stat`, `memory.events`) and proxy counters (requests, 5xx, p50/p95 from a fixed histogram 5 ms … 10 s, D26). CPU and I/O are counter deltas (a counter going backwards is a reset). 1 h of samples in memory (360 per scope); each minute is rolled up into `metrics_1m` (time-weighted averages, maxima, sums; a partial minute is written at shutdown and merged), pruned after 7 days. Charts are SVGs rendered by dootd (`/charts?scope=&chart=&range=1h|24h|7d`, ≤ 360 points, gaps not joined; D25). Warnings (dashboard only): disk > 85 %, memory > 90 %, OOM kill in the last hour, app > 90 % of its memory limit, crashed, backup failed or local only, cert expiring < 14 days, restart needed, setup step missing.
 
-- A failure in steps 2–5 never affects the running app.
-- A release that fails its health check is deleted; the previous release is restored and restarted only if it was running before.
-- Tags become release directory names, so they must match `[A-Za-z0-9][A-Za-z0-9._-]{0,63}` (e.g. `v1.4.0`); `DOOTD_RELEASE` is the tag.
-- Deploy logs are stored per deployment (`logs/builds/<deployment-id>.log`, last 20 kept) and streamed live.
-- On startup, deployments left `queued/building/deploying` by a crash or restart are marked failed and `downloads/` is emptied. A shutdown cancels the running download; a switch that already started (steps 6–11) always completes with a detached context so `current` and the running process never disagree.
-- Release metadata (tag, name, tarball SHA-256, `run`, `health_path`) is stored in the `releases` table, so rollbacks and restarts don't re-read `dootd.toml`.
-- Whether each app should run after a restart is stored in `app_state`.
-- **Roll back** switches to a kept release (no download). Deploying an older tag that is no longer kept downloads it again.
-- The release list comes from `GET /repos/<owner>/<repo>/releases?per_page=10` (drafts skipped), cached for a minute per app, so the page's 5 s refresh doesn't use up the API rate limit.
-- Deploys only ever happen when you click. There are no webhooks.
+## 10. Dashboard and security
 
-### 11.1 GitHub
-- A fine-grained PAT with **Contents: Read-only** on the app repositories is enough (public repositories work without one). dootd validates it when it's saved, uses it to list repos in the "Add app" form, and sends it with release and asset API requests. Asset downloads redirect to a short-lived signed URL on another host; the token is not forwarded there.
-- The token is only ever sent to `api.github.com` and stored sealed in `settings` under purpose `settings:github_token`.
+- Server-rendered pages; every action is a form POST + redirect (works without JS); `app.js` only does live logs (SSE), 5 s refresh of status sections and confirmations. Pages: Apps (home), App, Add app, Deployment, Logs, Monitoring, Settings, Account, Set up your account.
+- **Passwords:** argon2id (64 MiB, t=3, p=1), ≥ 12 chars, at most 2 hashes at a time; unknown emails hashed against a dummy. Email and password changes need the current password; a password change signs out other sessions; a forgotten password → re-run the installer.
+- **Sessions:** 32-byte token in `__Host-dootd` (`Secure; HttpOnly; SameSite=Strict; Path=/`), only its SHA-256 stored; 7 days idle, 30 days total; *sign out all others*.
+- **Rate limit** (in memory, reset by a restart): 5 failures per client IP per 15 min → 429, even for the right password; above 50 failures overall, one attempt per 2 s. Failed current-password checks count too.
+- **CSRF:** every POST needs `Origin` (or `Referer`) = `https://<Host>` and, when signed in, the session's token. Bodies ≤ 256 KB.
+- **Headers:** strict CSP (`default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`), `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: same-origin`, HSTS, `no-store`. Flash messages use a 60 s cookie.
+- Times are stored and scheduled in UTC and shown in the server's timezone with its name (D42).
 
-## 12. Backups
+## 11. Budget (measured on the real VPS, 1 vCPU, 5 apps)
 
-Only app databases are backed up. The policy is fixed:
-
-| Setting | Value |
-|---|---|
-| Schedule | every **3 h**, aligned to UTC (00:00, 03:00, …) |
-| Also | before every deploy/rollback, and **Back up now** on the app page |
-| Retention | **48 h**; the newest backup of each app is always kept |
-| Local copies | the newest **2** archives per app stay on the server; while a bucket is configured, archives not uploaded yet are also kept until the retention ends |
-| Target | any S3-compatible storage (R2, B2, MinIO, AWS) configured in Settings: endpoint, region (`auto` for R2), bucket, access key, secret |
-| Bucket layout | one folder per app at the bucket root: `<app>/<UTC time>-<kind>-<id>.tar.zst` |
-
-**S3 settings** are stored sealed (`settings:s3`) and only saved after a test upload, read-back and delete of `.dootd-connection-test` succeeds. The secret is never shown again; saving the form with an empty secret keeps the old one. Requests use path-style addressing and SigV4 (minio-go). Use a bucket (or an R2 API token scoped to one) for dootd only.
-
-**What is backed up**: every file under `DATA_DIR` that starts with the SQLite header (`SQLite format 3\0`), whatever its name, including sub-folders; `-wal`, `-shm`, `-journal` files and `.pre-restore-*` folders are skipped. If there are none, nothing is recorded (a pre-deploy backup logs "nothing to back up yet").
-
-**Snapshot**: dootd (root) opens each database with `busy_timeout=10000` and runs `VACUUM INTO '<staging>/…'`: a consistent, compacted copy taken while the app keeps writing. Each copy is checked with `PRAGMA quick_check`. If dootd's connection makes SQLite create `-wal`/`-shm` files, they are chowned back to the database owner so the app can still open the database.
-
-**Archive**: `tar` (first entry `manifest.json`: version, app, kind, time, release, dootd version, and path/size/SHA-256 of every database; then `data/<path>`) compressed with zstd, written to `backups/local/<app>/<UTC time>-<kind>-<id>.tar.zst`. The archive's SHA-256 is stored in the `backups` row.
-
-**Upload**: to `<app>/<same name>`. Scheduled and manual backups upload before returning; pre-deploy backups upload in the background so deploy downtime only includes the snapshot. 3 attempts with backoff; a failed upload is retried after every scheduled run (and when S3 settings are saved) until it succeeds or the retention ends.
-
-**Retention**: after each upload dootd lists the app's folder, reads the time from each key and deletes objects older than 48 h except the newest. It is done by dootd itself, not bucket lifecycle rules, so it behaves the same everywhere. Rows without any copy left, and failed rows older than the retention, are removed.
-
-**Restore** (Restore button next to a backup on the app page):
-1. Block deployments of the app for the duration (refused if one is queued or running).
-2. Take the local copy if its SHA-256 still matches, otherwise download from the bucket and check the SHA-256 against the row.
-3. Unpack into staging, check every file against the manifest (size, SHA-256, safe paths) and run `quick_check`. **Any failure stops here; the app is not touched.**
-4. Stop the app, move the current databases and their `-wal`/`-shm`/`-journal` files to `DATA_DIR/.pre-restore-<UTC time>/`, copy the restored files in (write + fsync + rename), give them to the app user.
-5. Start the app again if it was running.
-
-The last 2 `.pre-restore-*` folders are kept.
-
-**Visibility**: the app page lists backups (time, kind, status, size, bucket/server, release, Restore button); the home page shows the last backup time per app, a *backup failed* badge when the latest backup failed or could not be uploaded (a backup whose upload is still being retried does not hide an earlier problem), and a warning when no bucket is set. Deleting an app keeps its backups unless "Also delete its backups" is ticked.
-
-### 12.1 Restoring into a new app (new server, re-created app)
-
-The app name is derived from the repository name (§14.1), so the backup folder of an app is predictable. When a bucket is configured, **Add app** lists the folders in the bucket, preselects the one with the app's name (if it exists) and offers "start empty". If a folder is chosen, dootd downloads that folder's newest archive after creating the app, verifies it (SHA-256 of every file against the manifest, `quick_check`) and unpacks it into the new, still empty `DATA_DIR`, owned by the app user, before the first deploy. If that fails, the app is still created and the error is shown; nothing else is touched.
-
-Choosing a folder with a different name covers a renamed repository. From then on the app's own backups go to its own folder.
-
-Moving to a new server is therefore: run the installer, enter the settings again (Cloudflare token, dashboard domain, GitHub token, bucket), and add each app, picking its folder. DNS records and certificates follow automatically. Shut the old server down first, so both don't write to the same folders.
-
-## 13. Monitoring
-
-| Scope | Source | Metrics |
+| | Target | Measured |
 |---|---|---|
-| Server (`_host`) | `/proc/stat`, `/proc/meminfo`, `/proc/loadavg`, `statfs(data root)` | CPU % of all cores, memory used (total − available) and total, swap used, load, disk used/size |
-| dootd (`_dootd`) | `/proc/self/status`, `/proc/self/stat`, `/proc/self/task` | resident memory, CPU % of one core, threads |
-| Each app | cgroup `cpu.stat`, `memory.current`, `memory.max` (from the spec), `pids.current`, `io.stat`, `memory.events` | CPU % of one core, memory and limit, processes, disk read/write bytes/s, OOM kills |
-| Each app | edge counters (§9.4) | requests/min, 5xx/min, p50/p95 response time |
+| Idle RSS | < 30 MB | 26.6 MB (soft heap limit 12 MB, `GOGC=50`, memory returned every 2 min; D27) |
+| Idle CPU | < 1 % | 0.18 % |
+| Proxy overhead | < 1 ms p50 | 0.6 ms |
+| Binary | < 30 MB | 18 MB |
+| Reboot to serving | seconds | ~10 s after boot; update by the installer: 3 s |
 
-- `internal/metrics.Collector` samples every **10 s**. CPU and I/O are deltas of cumulative counters divided by the elapsed time; a counter that goes backwards (app re-created, route changed) counts as a reset.
-- Latency percentiles come from the per-app histogram (buckets 5, 10, 25, 50, 100, 250, 500 ms, 1, 2.5, 5, 10 s, and above); the value is the upper bound of the bucket containing the percentile, so it is an estimate with bucket resolution. No requests → no value (a gap in the chart).
-- The last hour of samples per scope is kept in memory (360 points each). At every minute boundary the samples of the previous minute are rolled up into `metrics_1m` (CPU, load and I/O time-weighted averages; memory, swap and processes maxima; requests, 5xx and OOM kills summed; percentiles from the summed histogram). If dootd restarts inside a minute, the partial minute is written at shutdown and merged with the rest (no requests are lost). Rows older than **7 days** are pruned at startup and hourly.
-- **Charts**: `GET /charts?scope=&chart=&range=1h|24h|7d` returns an SVG (server-rendered in `internal/web/chart.go`, no JavaScript chart library). 1h uses the in-memory samples (plus rollups from before a restart); 24h and 7d use rollups, downsampled to at most 360 points. Points more than 2.5 steps apart are not joined; single points are drawn as dots. Pages add a changing `t=` parameter to chart URLs so the 10 s refresh fetches new images.
-- **Pages**: *Monitoring* (server charts: CPU, memory, load, disk; a table of every app's current numbers; dootd's own CPU and memory against its 30 MB target) and a *Usage* section on each app page (CPU with its limit, memory with its limit, requests and 5xx, p50/p95).
+Most of the RSS is the binary's own code pages, so every new dependency costs memory.
 
-### 13.1 Warnings (dashboard only in v1)
-| Condition | Threshold (fixed) |
-|---|---|
-| Disk used on the data root | > 85 % |
-| Server memory used | > 90 % |
-| An app was OOM-killed in the last hour | always, with its limit |
-| An app uses > 90 % of its memory limit | always |
-| A certificate expires soon and was not renewed | < 14 days |
-| App crashed, backup failed or only local, configuration changed, setup still missing a step | always (§8.1, §10, §12, §14) |
+## 12. Changing dootd
 
-Email/webhook alerts are on the post-v1 backlog.
+- `make lint` (gofmt, vet, staticcheck) and `make test` (`-race`) run in CI on every PR with amd64/arm64 builds. Unit tests cover the risky pure parts: secrets, store and migrations, the one-time password, `dootd.toml`, tarball unpacking, backup archives, app names, the health check, the setup address, the GitHub client and page rendering.
+- There is **no automated end-to-end suite** (D44). Anything touching processes, cgroups, deploys, backups or the edge must be tried on a real Ubuntu VPS with a real Cloudflare zone: tag a pre-release (`vX.Y.Z-rc1`, published but not "latest"), install it with `DOOTD_VERSION=vX.Y.Z-rc1` in front of `bash` in the install command, and go through the affected flows in the dashboard. Useful checks: install/update, setup address closes, deploy + rollback + a broken release, restart/stop leaves no processes, backup + restore, direct IP access refused, no 520/521 through Cloudflare.
+- Release: push a `vX.Y.Z` tag; the release workflow lints, tests, builds both binaries, writes `checksums.txt` and publishes them with `install.sh`. Tags with `-` are pre-releases.
+- A schema change is a new numbered migration. An older binary then refuses the database, so going back to an earlier release after such an update needs a copy of `dootd.db` from before it; dootd doesn't make one.
 
-## 14. Dashboard and security
-
-- Served on the dashboard domain through the same Cloudflare-only, AOP-protected edge, and on the setup address while setup is open (§8.1). The dashboard is the only interface.
-- **UI**: server-rendered `html/template` pages and one CSS file, plus ~100 lines of plain JavaScript (`internal/web/static/app.js`) for live logs (Server-Sent Events), refreshing status sections every 5 s and confirmation prompts. Everything embedded with `go:embed`; every action is a normal form POST followed by a redirect, so the dashboard also works without JavaScript (except the live parts).
-- **Admin account**: exactly one user (`users` row id 1). It is created from the one-time password (§8.1). The Account page changes the email and the password (each needs the current password). A forgotten password is recovered by re-running the installer.
-- **Passwords**: argon2id (64 MiB, t=3, p=1), at least 12 characters. At most 2 hashes run at the same time so a burst of logins can't exhaust a 1 GB VPS. Unknown emails are checked against a dummy hash so timing doesn't reveal the email.
-- **Rate limiting** (in memory): 5 failed sign-ins per client IP (`CF-Connecting-IP`) per 15 minutes → 429. Above 50 failures in 15 minutes overall, sign-ins are additionally limited to one attempt per 2 s, which slows a distributed attack without locking the owner out.
-- **Sessions**: 32-byte random token in the cookie `__Host-dootd` (`Secure; HttpOnly; SameSite=Strict; Path=/`); only its SHA-256 is stored (`sessions`). Expiry: 7 days idle, 30 days total. The account page lists sessions and can sign out all others; a password change does that automatically.
-- **CSRF**: every POST needs `Origin` (or, failing that, `Referer`) equal to `https://<Host of the request>` (the router guarantees that Host is the dashboard domain on Cloudflare connections), and signed-in POSTs also need the session's CSRF token in the `csrf` form field.
-- **Headers**: `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`, HSTS, `Cache-Control: no-store` on pages. Request bodies are capped at 256 KB.
-- **Messages** after an action use a short-lived `__Host-dootd-flash` cookie (60 s).
-- **Secrets**: tokens and env var values are never shown again after saving; env vars are listed by name only.
-- **Pages**: Apps (host summary, warnings and missing setup steps, app table) · App (status and actions, deploy a GitHub release, kept releases with rollback, deployments, env vars, settings, backups, delete) · Add app · Deployment (live build log) · Logs (live app log) · Monitoring · Settings (Cloudflare token, dashboard domain, domains, zones with "Set Full (strict)", GitHub, backups bucket) · Account (email, password, sessions) · Set up your account (one-time password only).
-
-### 14.1 Apps in the database
-- The app **name is derived from the repository name**: lowercased, `_` and `.` become `-`. It must then be 2–24 characters of `a–z`, `0–9` and `-`, starting with a letter; otherwise the app is refused with the reason. One repository is one app. An app is just a repository, an optional domain, limits and env vars.
-- `apps` holds the configuration, `app_env` the sealed env vars (`app_env:<app>:<NAME>` as associated data). `internal/apps.Service` validates input (every problem reported at once), stores it and wires it into the deployer, supervisor and edge router at runtime; at startup it loads every stored app.
-- Ports are assigned once, from 20001 upwards, and never change.
-- Editing settings or env vars updates the stored config immediately; the running process keeps its old settings until a restart or deploy, and the dashboard says "restart needed" until then. Domain changes re-route immediately and clean up the old hostname.
-- **Delete** (type the name to confirm): unregister (refused while a deployment is running) → stop → remove the cgroups → delete rows, releases, logs, caches and build folders → delete the DNS records that point at this server and revoke the Origin CA certificate → `userdel`. With "keep data" (default) `DATA_DIR` is moved to `/var/lib/dootd/deleted/<app>-<unix time>/data`, owned by root.
-
-## 15. Updates
-
-dootd never updates itself. Re-running the installer (§8) downloads and verifies the latest release, stops dootd (apps stop as on any restart), replaces the binary, and starts it again; migrations run at start (§7, Req 5). A release that cannot start shows its error in `journalctl -u dootd`, and `DOOTD_VERSION=<previous tag>` installs the previous release again. That works unless the new release added a migration, because an older binary refuses a newer schema (Req 5.5); releases are tested end to end on CI before they are tagged.
-
-## 16. Resource budget (targets)
-
-| Item | Target | Measured (Phase 6 E2E, Ubuntu 24.04 runner, 5 apps, idle) |
-|---|---|---|
-| dootd idle RSS | < 30 MB | 25 MB (11 MB anonymous, 15 MB mapped binary pages) |
-| dootd idle CPU | < 1 % (10 s sampling, no busy loops) | 0.03 % |
-| Proxy overhead | < 1 ms p50 added latency | 0.6 ms p50 added, including TLS (1 vCPU VPS, keep-alive, 500 requests: 0.32 ms direct, 0.93 ms through the edge) |
-| Restart with 5 apps | a few seconds of downtime | measured in the E2E (`systemctl restart` → all apps healthy) |
-| Binary size | < 30 MB | 18 MB (linux/amd64, stripped) |
-
-To stay inside the memory budget dootd sets a soft heap limit of 12 MB (`debug.SetMemoryLimit`), `GOGC=50`, and returns freed memory to the kernel every 2 minutes. Setting `GOMEMLIMIT` or `GOGC` in the unit overrides this. The margin is small: most of the resident memory is the binary's own code pages, which grow with every dependency, so the Phase 6 E2E fails if RSS reaches 30 MB.
-
-## 17. Decisions log
+## 13. Decisions
 
 | # | Decision | Reason |
 |---|---|---|
-| D1 | Go, not Zig/C, for dootd itself | stdlib TLS, proxy and HTTP, pure-Go SQLite and S3 → fastest path to something reliable |
-| D2 | No Docker, only cgroups + users | Trusted single-user apps; keeps it light |
-| D3 | Stop-then-start deploys | Safe with a single SQLite writer; 1–3 s downtime accepted |
-| D4 | Deploy only on click | User preference; fewer moving parts |
-| D5 | Cloudflare Origin CA, no ACME | All domains are on Cloudflare; 15-year certs; no port 80 |
-| D6 | Zone AOP with own CA + IP filter | IP filter alone allows any Cloudflare customer through |
-| D7 | Snapshot backups every 3 h (not continuous replication) | RPO 3 h accepted; much simpler than a Litestream-style design |
-| D8 | Pinned Zig per app, also used as C compiler | Reproducible builds, a single toolchain (superseded by D38) |
-| D9 | Server-rendered HTML + a small vanilla script (no htmx) + server-rendered SVG | No frontend build pipeline and no vendored library; a strict CSP (`script-src 'self'`) is easy |
-| D10 | Kill cgroups by PID, not `cgroup.kill` | `cgroup.kill` makes later `CLONE_INTO_CGROUP` children die instantly on current Ubuntu kernels |
-| D11 | No `memory.high`, swap and zswap off for apps | Predictable OOM + restart instead of an app stalled near its limit |
-| D12 | E2E scripts run on GitHub-hosted Ubuntu 24.04 VMs | Real systemd + full cgroup v2; catches kernel behaviour unit tests cannot |
-| D13 | Clone as root, chown to the app user for the build, then make the tree root-owned (never following symlinks, skipping files owned by others) | The build can't escape into other users' files, and the app can't modify its own release (superseded by D38) |
-| D14 | Optional app path (monorepo subdirectory) | Lets one repo hold several apps; also lets E2E deploy `examples/*` straight from this repo (superseded by D36) |
-| D15 | Local admin API on a Unix socket + `dootd ctl` | Deploys before the dashboard exists; permanent SSH fallback; no network exposure (superseded by D33) |
-| D16 | Enforce AOP per zone, only after Cloudflare reports it active; persist the state | Never break a site during setup; never fail open after a restart |
-| D17 | Host must equal SNI (421 otherwise) | Stops cross-zone requests from bypassing a zone's AOP |
-| D18 | Edge sync is best effort and per host | One misconfigured domain does not block certificates or DNS for the others |
-| D19 | The admin is created over SSH (`dootd ctl admin set-password`), never through a web setup page | A public first-run page could be claimed by whoever reaches it first (superseded by D34) |
-| D20 | Config changes apply on restart/deploy, never silently to a running app | Predictable; the dashboard shows "restart needed" |
-| D21 | Deleting an app keeps its data by default (moved aside) | Deletion is one click; losing a database should not be |
-| D22 | Keep the newest archives on the server as well as in the bucket | Restores work without the bucket (and without a bucket at all), and an outage loses nothing |
-| D23 | Verify a backup completely before stopping the app | A broken or tampered backup can never cost uptime or data |
-| D24 | Backup interval and retention are settings (`[backups]`) | Lower RPO when needed; the tests use 30 s (superseded by D33: fixed policy) |
-| D25 | Charts are SVG images rendered by dootd | No JS library, works with the strict CSP, cheap to refresh |
-| D26 | Latency percentiles from a fixed histogram | Constant memory per app; bucket-level precision is enough to spot slow apps |
-| D27 | Soft heap limit + periodic FreeOSMemory | Keeps idle RSS under 30 MB without hand-tuning allocations |
-| D28 | The systemd unit is embedded in the binary and installed by `dootd setup-host` | One copy of the unit; `install.sh` stays small and the binary can repair it |
-| D29 | Self-update keeps `dootd.prev`, and the previous binary is the start guard | A broken release cannot guard itself; the last binary that started can (superseded by D35) |
-| D30 | Copy dootd.db before any migration, not only during updates | A rollback always has a schema the old binary can open; cheap for a small database (superseded by D35) |
-| D31 | `dootd init --restore` rebuilds from the bucket and redeploys from git instead of copying releases | Backups stay small (databases only), and builds are reproducible from the pinned Zig (superseded by D37) |
-| D32 | `init` and `init --restore` can run without a terminal (flags + environment variables) | The same code path is tested end to end on CI and can be scripted (superseded by D33) |
-| D33 | The dashboard is the only interface: no admin CLI, no control socket, no config file, fixed backup policy and warning thresholds | One non-technical user; every extra way to do something is more to maintain and to get right |
-| D34 | First sign-in with a one-time password printed by the installer, on a self-signed setup address that closes once the dashboard domain is ready | Setup before any domain exists without a public first-come claim page; the admin password is never exposed outside Cloudflare |
-| D35 | Updates by re-running the installer; no self-update | The same single command for install, update and recovery; no update guard or rollback machinery |
-| D36 | App name = repository name; `dootd.toml` at the repo root; no monorepo path | Predictable names and backup folders; one repo is one app |
-| D37 | Bucket folder per app (`<app>/`), restore chosen at Add app; dootd's own settings are not backed up | Moving servers only needs the bucket and a few settings typed again; no master-key export (recovery kit) |
-| D38 | dootd never builds: apps are built and tested in GitHub Actions and published as GitHub Releases; dootd deploys the release tarball | Builds (sqlite with ReleaseSafe needs ~2 GB) don't fit next to the apps on a 1 GB VPS; removes the toolchain manager, the builder, git cloning and their attack surface |
-| D39 | Releases, not Actions artifacts | Permanent, named by version, simple API; rollback is picking an older tag |
-| D40 | One fixed asset name per architecture (`app-linux-<arch>.tar.gz`) plus `checksums.txt`, static musl binaries | No per-app naming rules; binaries don't depend on the server's libc; the checksum catches truncated or swapped downloads |
-| D41 | The dashboard domain is ready only when a request for it has come through Cloudflare with AOP, or its zone is active and in Full or Full (strict) mode (the last mode read is kept when the API fails) | Found on the first real VPS run: a zone in Flexible mode (Cloudflare connects to :80, error 521) closed the setup address and locked the user out of the dashboard. A real visit is the strongest proof, and works when the token cannot read the mode or a per-host rule overrides it |
-| D42 | Everything is stored and scheduled in UTC; the dashboard shows clock times in the server's timezone with its name ("IST", "UTC") | The server's timezone never changes behaviour (backups stay at 00:00, 03:00 … UTC); the label keeps the times unambiguous |
-| D43 | Require the AOP client certificate only 10 minutes after Cloudflare reports it active (and after every re-upload or re-enable); log net/http's handshake errors with a count once a minute; check that a domain belongs to a Cloudflare zone when it is saved | Found on the second real VPS run: Cloudflare's edge rolls a new certificate out over several minutes, and enforcing at once made 2–5 % of requests fail with 520 for that long. The failures were invisible because handshake errors were logged at debug level. A domain in no zone used to be accepted and only failed later in the background |
-
-## 18. Test-only environment variables
-
-The end-to-end scripts run dootd against fakes. These variables are read only by `internal/testenv`, are set only in a systemd drop-in by the scripts, and are not a user feature:
-
-| Variable | Effect |
-|---|---|
-| `DOOTD_TEST_CLOUDFLARE_API` | Cloudflare API base URL (the fake from `e2etool cfmock`) |
-| `DOOTD_TEST_PUBLIC_IPV4`, `DOOTD_TEST_PUBLIC_IPV6` | Skip IP detection (`off` = no IPv6) |
-| `DOOTD_TEST_GITHUB_API` | GitHub API base URL (the fake from `e2etool ghmock`) |
-| `DOOTD_TEST_BACKUP_INTERVAL`, `DOOTD_TEST_BACKUP_RETENTION` | Short backup schedule (e.g. `30s`, `10m`) |
-| `DOOTD_TEST_WARN_PERCENT` | Disk and memory warning threshold |
-| `DOOTD_TEST_AOP_ROLLOUT` | Wait before AOP is required (`0s` = at once; the fake API has no rollout) |
-
-`install.sh` also reads `DOOTD_BASE_URL` (download from a local server) for the installer test.
+| D1 | Go for dootd | stdlib TLS/proxy/HTTP, pure-Go SQLite and S3 |
+| D2 | No containers: users + cgroups | trusted single-owner apps; light |
+| D3 | Stop-then-start deploys | safe with one SQLite writer; sub-second downtime |
+| D4 | Deploy only on click | fewer moving parts |
+| D5 | Cloudflare Origin CA, no ACME | all domains on Cloudflare; 15-year certs; no port 80 |
+| D6 | Zone AOP with own CA + IP filter | the IP filter alone lets any Cloudflare customer in |
+| D7 | Snapshot backups every 3 h | RPO 3 h is enough; far simpler than replication |
+| D9 | Server-rendered HTML, tiny JS, no frontend build | strict CSP, nothing to vendor |
+| D10 | Kill cgroups by PID, not `cgroup.kill` | `cgroup.kill` made later `CLONE_INTO_CGROUP` children die on Ubuntu kernels |
+| D11 | No `memory.high`; no swap/zswap for apps | clean OOM + restart instead of a stalled app |
+| D16 | Enforce AOP per zone only once active; persist it | never break a site during setup; never fail open after a restart |
+| D17 | `Host` must equal SNI (421) | stops cross-zone requests bypassing a zone's AOP |
+| D18 | Edge sync best effort per host | one broken domain doesn't block the others |
+| D20 | Config changes apply on restart/deploy | predictable; "restart needed" shown |
+| D21 | Deleting an app keeps its data by default | deletion is one click; data loss shouldn't be |
+| D22 | Newest archives also kept on the server | restores work without the bucket; outages lose nothing |
+| D23 | Verify a backup fully before stopping the app | a bad backup never costs uptime or data |
+| D25 | SVG charts rendered by dootd | no JS library; works with the CSP |
+| D26 | Latency percentiles from a fixed histogram | constant memory; bucket precision is enough |
+| D27 | Soft heap limit + periodic FreeOSMemory | keeps idle RSS < 30 MB |
+| D28 | systemd unit embedded, installed by `setup-host` | one copy; the binary can repair it |
+| D33 | The dashboard is the only interface | one non-technical user; each extra way is more to maintain |
+| D34 | First sign-in with an installer-printed one-time password on a self-signed setup address that closes | no first-come public claim page; admin password never used outside Cloudflare |
+| D35 | Update = re-run the installer | one command for install, update, recovery |
+| D36 | App name = repository name; `dootd.toml` at the root | predictable names and backup folders |
+| D37 | Bucket folder per app; restore chosen at Add app; no settings backup | moving servers needs only the bucket and a few settings |
+| D38 | dootd never builds; apps ship as GitHub releases | builds don't fit next to apps on 1 GB; removes toolchains and git from the server |
+| D39 | Releases, not Actions artifacts | permanent, versioned; rollback = older tag |
+| D40 | Fixed asset names + `checksums.txt`, static musl | no naming rules; no libc dependency; catches bad downloads |
+| D41 | Dashboard domain ready after a visit through Cloudflare with AOP, or an active zone in Full/Full (strict) | a Flexible zone once locked the user out; a visit is the strongest proof |
+| D42 | UTC everywhere, shown in server time with the zone name | the server's timezone never changes behaviour |
+| D43 | Require AOP 10 min after Cloudflare reports it active (and after re-uploads); log handshake errors; check the zone when a domain is saved | Cloudflare's edge rolls certs out over minutes (2–5 % 520s otherwise); the cause had been invisible; typos failed silently |
+| D44 | No automated end-to-end suite; unit tests + a real-VPS check for risky changes | single-user tool that rarely changes; the real VPS found what the fakes couldn't |

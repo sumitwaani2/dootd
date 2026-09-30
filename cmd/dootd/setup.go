@@ -18,10 +18,9 @@ import (
 	"github.com/sumitwaani2/dootd/internal/layout"
 	"github.com/sumitwaani2/dootd/internal/secrets"
 	"github.com/sumitwaani2/dootd/internal/store"
-	"github.com/sumitwaani2/dootd/internal/testenv"
 )
 
-// runSetupHost is the second half of install.sh (docs/architecture.md §8):
+// runSetupHost is the second half of install.sh (docs/architecture.md):
 // directories, master key, systemd unit, a new one-time password, start
 // dootd, print how to sign in. install.sh stops dootd before it replaces
 // the binary; running this again is safe.
@@ -88,12 +87,9 @@ func setupHost(out io.Writer) error {
 	}
 	ready := waitListening("127.0.0.1:443", 30*time.Second)
 
-	ip := testenv.PublicIPv4()
-	if ip == "" {
-		dctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		ip, _ = edge.DetectIP(dctx, "tcp4")
-		cancel()
-	}
+	dctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	ip, _ := edge.DetectIP(dctx, "tcp4")
+	cancel()
 	if ip == "" {
 		ip = "<this server's IP address>"
 	}

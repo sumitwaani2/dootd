@@ -150,7 +150,7 @@ func (c *Client) Delete(ctx context.Context, key string) error {
 	return wrap("delete "+key, c.mc.RemoveObject(ctx, c.bucket, key, minio.RemoveObjectOptions{}))
 }
 
-// Test uploads, reads back and deletes a small object (Req 7.4).
+// Test uploads, reads back and deletes a small object.
 func (c *Client) Test(ctx context.Context) error {
 	key := ".dootd-connection-test"
 	body := []byte("dootd connection test " + time.Now().UTC().Format(time.RFC3339Nano))

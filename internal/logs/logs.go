@@ -28,7 +28,7 @@ const (
 	System = "dootd" // lines written by dootd about the app (start, exit, OOM)
 )
 
-// Defaults (docs/architecture.md §10.4).
+// Defaults (docs/architecture.md).
 const (
 	DefaultMaxSize  = 10 << 20
 	DefaultKeep     = 3

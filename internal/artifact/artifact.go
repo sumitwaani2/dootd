@@ -1,5 +1,5 @@
 // Package artifact checks and unpacks release tarballs (docs/architecture.md
-// §11): the SHA-256 from checksums.txt, safe extraction, and an ELF check
+// §7): the SHA-256 from checksums.txt, safe extraction, and an ELF check
 // that the app binary runs on this machine.
 package artifact
 

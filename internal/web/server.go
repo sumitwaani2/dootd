@@ -1,7 +1,7 @@
 // Package web is the dashboard: server-rendered HTML with a small script
 // for live logs and status refresh. It is served on the dashboard domain
 // through the edge, and on the setup address while setup is open
-// (docs/architecture.md §8.1, §14).
+// (docs/architecture.md).
 package web
 
 import (

@@ -2,7 +2,7 @@
 //
 // It has no admin CLI: install.sh runs `dootd setup-host`, systemd runs
 // `dootd serve`, and everything else happens in the dashboard
-// (docs/architecture.md §8, D33).
+// (docs/architecture.md, D33).
 package main
 
 import (

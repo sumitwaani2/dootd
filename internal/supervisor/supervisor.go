@@ -96,7 +96,7 @@ func (s *Supervisor) Add(spec app.Spec) (*App, error) {
 
 func applyLimits(g *cgroup.Group, l app.Limits) error {
 	// No memory.high: without swap it cannot reclaim app memory and only
-	// stalls the app (observed in E2E); a clean OOM kill + restart is better.
+	// stalls the app (observed in testing); a clean OOM kill + restart is better.
 	_, err := g.SetLimits(cgroup.Limits{
 		MemoryMax: l.MemoryMax,
 		NoSwap:    true, // predictable OOM at memory.max instead of swapping
@@ -124,7 +124,7 @@ func (s *Supervisor) Apps() []*App {
 	return out
 }
 
-// StartAll starts apps one at a time (Req 10.7), waiting for each to
+// StartAll starts apps one at a time, waiting for each to
 // become healthy or fail before starting the next. Apps without a release
 // and apps for which want returns false are skipped. Failures are logged;
 // failed apps keep retrying under the restart policy.
