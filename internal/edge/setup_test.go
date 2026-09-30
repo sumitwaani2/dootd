@@ -107,16 +107,36 @@ func TestSetupAddress(t *testing.T) {
 	if _, err := m.Certs.Put("dootd.example.test", certPEM, keyPEM); err != nil {
 		t.Fatal(err)
 	}
+	zone := &ZoneStatus{ID: "z1", Name: "example.test"}
 	m.mu.Lock()
 	m.hostZone["dootd.example.test"] = "z1"
 	m.enforce["z1"] = true
+	m.zoneState["z1"] = zone
 	m.mu.Unlock()
 	if m.SetupOpen() != true {
 		t.Fatal("a pending one-time password keeps setup open")
 	}
 	pending.Store(false)
+	// Cloudflare cannot reach :443 unless the zone is in Full or Full
+	// (strict) mode, and an inactive zone serves nothing: setup stays open.
+	for _, c := range []struct{ mode, status, want string }{
+		{"", "", "checking the SSL/TLS mode"},
+		{"flexible", "active", `"flexible"`},
+		{"off", "", `"off"`},
+		{"strict", "pending", `"pending"`},
+	} {
+		m.mu.Lock()
+		zone.SSLMode, zone.Status = c.mode, c.status
+		m.mu.Unlock()
+		if !m.SetupOpen() || !strings.Contains(m.DashboardProblem(), c.want) {
+			t.Fatalf("mode %q status %q: setup open %v, problem %q", c.mode, c.status, m.SetupOpen(), m.DashboardProblem())
+		}
+	}
+	m.mu.Lock()
+	zone.SSLMode, zone.Status = "strict", "active"
+	m.mu.Unlock()
 	if m.SetupOpen() {
-		t.Fatal("setup should be closed")
+		t.Fatal("setup should be closed: " + m.DashboardProblem())
 	}
 	// A connection that was already open gets a pointer to the domain.
 	code, body, _, err = get("https://203.0.113.5/")

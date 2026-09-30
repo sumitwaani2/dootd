@@ -176,16 +176,17 @@ func (s *Server) warnings(r *http.Request, rows []AppRow) []string {
 	if !st.TokenSet {
 		ws = append(ws, "Setup: no Cloudflare token is set, so DNS records and certificates cannot be managed. Add one in Settings → Cloudflare.")
 	}
+	problem := s.Edge.DashboardProblem()
 	switch {
 	case st.Dashboard == "":
 		ws = append(ws, "Setup: no dashboard domain yet, so the dashboard is only reachable on the server's IP address. Set one in Settings → Dashboard domain.")
-	case !s.Edge.DashboardReady():
-		ws = append(ws, "Setup: the dashboard domain "+st.Dashboard+" is being set up (DNS record, certificate, origin pulls). Until it is ready the dashboard also answers on the server's IP address.")
+	case problem != "":
+		ws = append(ws, "Setup: the dashboard domain "+st.Dashboard+" is not ready yet: "+problem+". Until it is ready the dashboard also answers on the server's IP address.")
 	case edge.IsDirect(r):
 		ws = append(ws, "You are on the setup address. The dashboard is at https://"+st.Dashboard+"/ and this address stops answering once the one-time password is used or expires.")
 	}
 	for _, z := range st.Zones {
-		if z.Warning != "" {
+		if z.Warning != "" && z.Warning != problem {
 			ws = append(ws, z.Name+": "+z.Warning)
 		}
 	}
@@ -487,7 +488,8 @@ func (s *Server) settingsPage(w http.ResponseWriter, r *http.Request) {
 		data["GitHubSet"], data["GitHubLogin"] = true, string(login)
 	}
 	data["Edge"] = s.Edge.Status(ctx)
-	data["DashboardReady"] = s.Edge.DashboardReady()
+	data["DashboardProblem"] = s.Edge.DashboardProblem()
+	data["DashboardReady"] = data["DashboardProblem"] == ""
 	if s.Backups != nil {
 		if c, ok, err := s.Backups.S3Config(ctx); err == nil && ok {
 			c.SecretKey = ""
@@ -531,12 +533,17 @@ func (s *Server) setGitHubToken(w http.ResponseWriter, r *http.Request) {
 func (s *Server) setCloudflareToken(w http.ResponseWriter, r *http.Request) {
 	cctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	zones, err := s.Edge.SetToken(cctx, strings.TrimSpace(r.PostFormValue("token")))
+	zones, missing, err := s.Edge.SetToken(cctx, strings.TrimSpace(r.PostFormValue("token")))
 	if err != nil {
 		redirect(w, r, "/settings", fmt.Errorf("token not saved: %w", err), "")
 		return
 	}
 	s.Edge.SyncInBackground()
+	if len(missing) > 0 {
+		redirect(w, r, "/settings", fmt.Errorf("the Cloudflare token was saved (encrypted), but it lacks these permissions: %s. "+
+			"Edit the token in Cloudflare (My Profile → API Tokens) to add them, then press Sync now", strings.Join(missing, ", ")), "")
+		return
+	}
 	redirect(w, r, "/settings", nil, "Cloudflare token saved (encrypted). Zones: "+strings.Join(zones, ", ")+". Syncing DNS and certificates now.")
 }
 

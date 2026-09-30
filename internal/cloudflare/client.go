@@ -51,6 +51,12 @@ func IsNotFound(err error) bool {
 	return errors.As(err, &e) && e.Status == http.StatusNotFound
 }
 
+// IsForbidden reports a 401 or 403 from the API: the token lacks a permission.
+func IsForbidden(err error) bool {
+	var e *Error
+	return errors.As(err, &e) && (e.Status == http.StatusForbidden || e.Status == http.StatusUnauthorized)
+}
+
 type envelope struct {
 	Success bool            `json:"success"`
 	Errors  []apiMsg        `json:"errors"`
@@ -135,8 +141,9 @@ func (c *Client) Verify(ctx context.Context) error {
 
 // Zone is a Cloudflare zone.
 type Zone struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Status string `json:"status"` // active, pending (nameservers not switched yet), initializing, moved
 }
 
 // Zones lists zones the token can read.
