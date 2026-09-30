@@ -79,12 +79,16 @@ func (c Chart) SVG() []byte {
 	for i := 0; i <= 3; i++ {
 		t := c.From.Add(time.Duration(float64(c.To.Sub(c.From)) * float64(i) / 3))
 		anchor := "middle"
+		label := t.Local().Format(layout)
 		if i == 0 {
 			anchor = "start"
 		} else if i == 3 {
 			anchor = "end"
+			if layout == "15:04" {
+				label += " " + t.Local().Format("MST") // the server's timezone
+			}
 		}
-		fmt.Fprintf(&b, `<text x="%.1f" y="%.1f" text-anchor="%s" fill="#6b7280">%s</text>`, x(t), chartH-5, anchor, t.Local().Format(layout))
+		fmt.Fprintf(&b, `<text x="%.1f" y="%.1f" text-anchor="%s" fill="#6b7280">%s</text>`, x(t), chartH-5, anchor, esc(label))
 	}
 
 	// Series.

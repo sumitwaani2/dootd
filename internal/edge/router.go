@@ -43,7 +43,11 @@ type Router struct {
 	State func(app string) Availability
 	// SetupOpen reports whether the setup address is open.
 	SetupOpen func() bool
-	Log       *slog.Logger
+	// DashboardReached is told when a request for the dashboard domain
+	// arrived through Cloudflare with a verified AOP client certificate:
+	// proof that DNS, the certificate, AOP and the zone's SSL mode work.
+	DashboardReached func(host string)
+	Log              *slog.Logger
 
 	dashHost atomic.Value // string
 	mu       sync.RWMutex
@@ -161,6 +165,9 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if dh := rt.DashboardHost(); dh != "" && host == dh {
+		if rt.DashboardReached != nil && r.TLS != nil && len(r.TLS.VerifiedChains) > 0 {
+			rt.DashboardReached(host)
+		}
 		rt.Dashboard.ServeHTTP(w, r)
 		return
 	}

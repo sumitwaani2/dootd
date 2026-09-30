@@ -138,6 +138,26 @@ func TestSetupAddress(t *testing.T) {
 	if m.SetupOpen() {
 		t.Fatal("setup should be closed: " + m.DashboardProblem())
 	}
+	// A visit through Cloudflare with AOP proves the domain works even when
+	// the mode cannot be read (token without Zone Settings) or a per-host
+	// rule overrides a Flexible zone. It is remembered, per domain.
+	m.mu.Lock()
+	zone.SSLMode, zone.Warning = "", "dootd cannot read the SSL/TLS mode"
+	m.mu.Unlock()
+	if !m.SetupOpen() {
+		t.Fatal("unknown SSL mode: setup should stay open")
+	}
+	m.DashboardReached("other.example.test") // not the dashboard domain: ignored
+	if !m.SetupOpen() {
+		t.Fatal("a visit to another domain must not close setup")
+	}
+	m.DashboardReached("dootd.example.test")
+	if m.SetupOpen() {
+		t.Fatal("setup should be closed after a visit through Cloudflare: " + m.DashboardProblem())
+	}
+	if v, ok, _ := st.GetSetting(ctx, settingDashboardReached); !ok || string(v) != "dootd.example.test" {
+		t.Fatalf("reached state not saved: %q", v)
+	}
 	// A connection that was already open gets a pointer to the domain.
 	code, body, _, err = get("https://203.0.113.5/")
 	if err != nil || code != http.StatusForbidden || !strings.Contains(body, "https://dootd.example.test/") {
