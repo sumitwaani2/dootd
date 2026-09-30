@@ -239,10 +239,19 @@ func takeFlash(w http.ResponseWriter, r *http.Request) (msg string, ok bool) {
 	return strings.TrimPrefix(v, "err:"), false
 }
 
+// sentence capitalizes the first letter of an error shown to the user
+// (Go errors start lowercase).
+func sentence(s string) string {
+	if s == "" || s[0] < 'a' || s[0] > 'z' {
+		return s
+	}
+	return string(s[0]-'a'+'A') + s[1:]
+}
+
 // redirect finishes a POST with a flash message.
 func redirect(w http.ResponseWriter, r *http.Request, to string, err error, okMsg string) {
 	if err != nil {
-		flash(w, false, err.Error())
+		flash(w, false, sentence(err.Error()))
 	} else if okMsg != "" {
 		flash(w, true, okMsg)
 	}
@@ -372,7 +381,7 @@ func humanBytes(n int64) string {
 
 // errorPage renders a simple error inside the layout.
 func (s *Server) errorPage(w http.ResponseWriter, r *http.Request, status int, err error) {
-	s.render(w, r, status, "error", "Error", "", map[string]any{"Status": status, "Message": err.Error()})
+	s.render(w, r, status, "error", http.StatusText(status), "", map[string]any{"Status": http.StatusText(status), "Message": sentence(err.Error())})
 }
 
 var errNotFound = errors.New("not found")

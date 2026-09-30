@@ -8,7 +8,7 @@
     {{template "csrf" $csrf}}
     <label>New email <input type="email" name="email" value="{{.Admin}}" autocomplete="username" required></label>
     <label>Current password <input type="password" name="current" autocomplete="current-password" required></label>
-    <div class="wide"><button>Change email</button></div>
+    <div class="wide buttons"><button>Change email</button></div>
   </form>
   <h2>Change password</h2>
   <form method="post" action="/account/password" class="grid">
@@ -16,7 +16,7 @@
     <label>Current password <input type="password" name="current" autocomplete="current-password" required></label>
     <label>New password <input type="password" name="new" autocomplete="new-password" minlength="12" required></label>
     <label>Repeat new password <input type="password" name="confirm" autocomplete="new-password" minlength="12" required></label>
-    <div class="wide"><button>Change password</button> <small class="muted">Signs out every other session.</small></div>
+    <div class="wide buttons"><button>Change password</button> <small class="muted">Signs out every other session.</small></div>
   </form>
 </section>
 <section class="card">

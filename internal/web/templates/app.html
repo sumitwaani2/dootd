@@ -21,20 +21,14 @@
   <dl class="facts">
     <dt>Domain</dt><dd>{{if .Domain}}<a href="https://{{.Domain}}/" target="_blank" rel="noopener">{{.Domain}}</a>{{else}}-{{end}}
       {{with $.Data.EdgeHost}}<small class="muted">· DNS {{.DNS}} · certificate until {{date .CertUntil}}</small>{{if .Error}}<br><span class="error-text">{{.Error}}</span>{{end}}{{end}}</dd>
-    <dt>Release</dt><dd><code>{{if .Status.Release}}{{.Status.Release}}{{else}}not deployed yet{{end}}</code></dd>
+    <dt>Release</dt><dd>{{if .Status.Release}}<code>{{.Status.Release}}</code>{{else}}<span class="muted">not deployed yet</span>{{end}}</dd>
     <dt>Repository</dt><dd><a href="{{.Repo}}/releases" target="_blank" rel="noopener">{{.Repo}}</a></dd>
-    <dt>Process</dt><dd>{{if .Status.PID}}pid {{.Status.PID}}, healthy {{ago .Status.HealthyAt}}{{else}}-{{end}} · port {{.Port}}</dd>
-    <dt>Usage</dt><dd>{{bytes .MemBytes}} of {{bytes .Limits.MemoryMax}} · {{.Requests}} requests{{if .Requests5xx}} ({{.Requests5xx}} 5xx){{end}}</dd>
+    <dt>Process</dt><dd>{{if .Status.PID}}pid {{.Status.PID}}, healthy {{ago .Status.HealthyAt}} · {{else}}not running · {{end}}port {{.Port}}</dd>
+    <dt>Usage</dt><dd>{{if .MemBytes}}{{bytes .MemBytes}} of {{bytes .Limits.MemoryMax}} memory · {{end}}{{.Requests}} requests{{if .Requests5xx}} ({{.Requests5xx}} 5xx){{end}}</dd>
     <dt>Restarts</dt><dd>{{.Status.Restarts}}{{if .Status.OOMKills}} · <span class="error-text">{{.Status.OOMKills}} out-of-memory kills</span>{{end}}{{with .Status.LastExit}} · last exit: {{.}}{{end}}</dd>
   </dl>
 </section>
 </div>
-
-<section class="card" id="usage">
-  <div class="row"><h2>Usage</h2>{{template "ranges" $.Data}}</div>
-  {{with $.Data.Now}}<p class="muted">Now: CPU {{printf "%.1f" .CPU}}% of a core · memory {{bytes .Mem}} · {{.Pids}} processes · disk read {{bytes (int64 .IORead)}}/s, write {{bytes (int64 .IOWrite)}}/s · {{printf "%.0f" .Req}} requests/min</p>{{end}}
-  <div class="charts" data-refresh="10" id="app-charts">{{range $.Data.Charts}}<figure><figcaption>{{.Title}}</figcaption><img src="{{.URL}}" alt="{{.Title}} chart" width="640" height="180"></figure>{{end}}</div>
-</section>
 
 <section class="card" id="deploy">
   <h2>Deploy</h2>
@@ -51,9 +45,16 @@
   <p class="muted">The 10 newest GitHub releases of {{$.Data.App.Repo}}. The chosen release is downloaded, checked against its checksums.txt and started; if it doesn't become healthy, the current one keeps running.</p>
   {{else}}
   {{with $.Data.GitHubErr}}<p class="error">Could not list the releases: {{.}}</p>{{else}}
-  <p class="muted">The repository has no releases yet. Add the release workflow (docs/app-contract.md §2) and push a tag: <code>git tag v1.0.0 &amp;&amp; git push origin v1.0.0</code>. The release shows up here a few minutes later.</p>{{end}}
+  <p class="muted">The repository has no releases yet. Add the release workflow (<a href="https://github.com/sumitwaani2/dootd/blob/main/docs/app-contract.md#22-the-release-workflow" target="_blank" rel="noopener">app contract §2</a>) and push a tag: <code>git tag v1.0.0 &amp;&amp; git push origin v1.0.0</code>. The release shows up here a few minutes later.</p>{{end}}
   {{end}}
 </section>
+
+<section class="card" id="usage">
+  <div class="row"><h2>Usage</h2>{{template "ranges" $.Data}}</div>
+  {{with $.Data.Now}}<p class="muted">Now: CPU {{printf "%.1f" .CPU}}% of a core · memory {{bytes .Mem}} · {{.Pids}} processes · disk read {{bytes (int64 .IORead)}}/s, write {{bytes (int64 .IOWrite)}}/s · {{printf "%.0f" .Req}} requests/min</p>{{end}}
+  <div class="charts" data-refresh="10" id="app-charts">{{range $.Data.Charts}}<figure><figcaption>{{.Title}}</figcaption><img src="{{.URL}}" alt="{{.Title}} chart" width="640" height="180"></figure>{{end}}</div>
+</section>
+
 
 <section class="card">
   <h2>Kept releases</h2>
@@ -62,11 +63,11 @@
     <thead><tr><th>Release</th><th>Name</th><th>SHA-256</th><th>Deployed</th><th></th></tr></thead>
     <tbody>{{range .}}
     <tr>
-      <td><code>{{.ID}}</code>{{if .Current}} <span class="badge s-running">current</span>{{end}}</td>
-      <td>{{.Subject}}</td>
+      <td class="nowrap"><code>{{.ID}}</code>{{if .Current}} <span class="badge s-running">current</span>{{end}}</td>
+      <td>{{if ne .Subject .ID}}{{.Subject}}{{end}}</td>
       <td><code>{{short .SHA256}}</code></td>
       <td>{{ago .CreatedAt}}</td>
-      <td>{{if not .Current}}<form method="post" action="/apps/{{.App}}/rollback" class="inline" data-confirm="Switch to release {{.ID}}?">{{template "csrf" $csrf}}<input type="hidden" name="release" value="{{.ID}}"><button>Roll back</button></form>{{end}}</td>
+      <td class="end">{{if not .Current}}<form method="post" action="/apps/{{.App}}/rollback" class="inline" data-confirm="Switch to release {{.ID}}?">{{template "csrf" $csrf}}<input type="hidden" name="release" value="{{.ID}}"><button>Roll back</button></form>{{end}}</td>
     </tr>{{end}}
     </tbody>
   </table>
@@ -81,7 +82,7 @@
     <tbody>{{range .}}
     <tr>
       <td><a href="/deployments/{{.ID}}">#{{.ID}}</a></td><td>{{.Kind}}</td><td>{{template "state" .Status}}</td>
-      <td><code>{{if .ReleaseID}}{{.ReleaseID}}{{else}}-{{end}}</code></td><td>{{ago .StartedAt}}</td><td>{{dur .StartedAt .FinishedAt}}</td>
+      <td>{{if .ReleaseID}}<code>{{.ReleaseID}}</code>{{else}}<span class="muted">-</span>{{end}}</td><td>{{ago .StartedAt}}</td><td>{{dur .StartedAt .FinishedAt}}</td>
       <td class="clip">{{.Error}}</td>
     </tr>{{end}}
     </tbody>
@@ -101,12 +102,12 @@
     <thead><tr><th>#</th><th>Taken</th><th>Kind</th><th>Status</th><th>Size</th><th>Where</th><th>Release</th><th></th></tr></thead>
     <tbody>{{range .}}
     <tr>
-      <td>#{{.ID}}</td><td>{{datetime .CreatedAt}} <small class="muted">{{ago .CreatedAt}}</small></td><td>{{.Kind}}</td>
+      <td>#{{.ID}}</td><td class="nowrap">{{datetime .CreatedAt}} <small class="muted">{{ago .CreatedAt}}</small></td><td>{{.Kind}}</td>
       <td>{{if eq .Status "ok"}}<span class="badge s-running">ok</span>{{else}}{{template "state" .Status}}{{end}}{{with .Error}} <small class="error-text">{{.}}</small>{{end}}</td>
       <td>{{bytes .Size}}</td>
       <td>{{if .Uploaded}}bucket{{end}}{{if and .Uploaded .LocalPath}} + {{end}}{{if .LocalPath}}server{{end}}</td>
-      <td><code>{{if .ReleaseID}}{{.ReleaseID}}{{else}}-{{end}}</code></td>
-      <td>{{if .Restorable}}<form method="post" action="/apps/{{$.Data.App.Name}}/restore" class="inline" data-confirm="Restore backup #{{.ID}} from {{datetime .CreatedAt}}? The app is stopped briefly; its current databases are moved to a .pre-restore folder.">{{template "csrf" $csrf}}<input type="hidden" name="id" value="{{.ID}}"><button>Restore</button></form>{{end}}</td>
+      <td>{{if .ReleaseID}}<code>{{.ReleaseID}}</code>{{else}}<span class="muted">-</span>{{end}}</td>
+      <td class="end">{{if .Restorable}}<form method="post" action="/apps/{{$.Data.App.Name}}/restore" class="inline" data-confirm="Restore backup #{{.ID}} from {{datetime .CreatedAt}}? The app is stopped briefly; its current databases are moved to a .pre-restore folder.">{{template "csrf" $csrf}}<input type="hidden" name="id" value="{{.ID}}"><button>Restore</button></form>{{end}}</td>
     </tr>{{end}}
     </tbody>
   </table>
@@ -119,14 +120,14 @@
   {{if .EnvNames}}
   <table><tbody>{{range .EnvNames}}
     <tr><td><code>{{.}}</code></td><td class="muted">••••••••</td>
-    <td><form method="post" action="/apps/{{$.Data.App.Name}}/env/delete" class="inline" data-confirm="Remove {{.}}?">{{template "csrf" $csrf}}<input type="hidden" name="key" value="{{.}}"><button class="link">remove</button></form></td></tr>
+    <td class="end"><form method="post" action="/apps/{{$.Data.App.Name}}/env/delete" class="inline" data-confirm="Remove {{.}}?">{{template "csrf" $csrf}}<input type="hidden" name="key" value="{{.}}"><button class="link">remove</button></form></td></tr>
   {{end}}</tbody></table>
   {{end}}
   <form method="post" action="/apps/{{.Name}}/env" class="grid">
     {{template "csrf" $csrf}}
     <label>Name <input name="key" required pattern="[A-Za-z_][A-Za-z0-9_]*" placeholder="SECRET_KEY"></label>
     <label class="wide">Value <textarea name="value" rows="2" autocomplete="off" spellcheck="false"></textarea></label>
-    <div class="wide"><button>Save variable</button></div>
+    <div class="wide buttons"><button>Save variable</button></div>
   </form>
 </section>
 
@@ -143,7 +144,7 @@
       <label>CPU cores <input name="cpu" value="{{.CPU}}" size="4"></label>
       <label>Processes <input name="pids" value="{{.Pids}}" size="5"></label>
     </fieldset>
-    <div class="wide"><button>Save settings</button></div>
+    <div class="wide buttons"><button>Save settings</button></div>
   </form>
   {{end}}
 </section>
@@ -153,10 +154,10 @@
   <p>Stops the app and removes its releases, logs, system user, DNS record and certificate.</p>
   <form method="post" action="/apps/{{.Name}}/delete" class="grid" data-confirm="Delete {{.Name}}? This cannot be undone.">
     {{template "csrf" $csrf}}
-    <label>Type <b>{{.Name}}</b> to confirm <input name="confirm" autocomplete="off" required></label>
-    <label class="check"><input type="checkbox" name="keep_data" value="1" checked> Keep a copy of the data directory (SQLite files)</label>
-    <label class="check"><input type="checkbox" name="delete_backups" value="1"> Also delete its backups (on this server and in the bucket)</label>
-    <div class="wide"><button class="danger">Delete {{.Name}}</button></div>
+    <label><span>Type <b>{{.Name}}</b> to confirm</span> <input name="confirm" autocomplete="off" required></label>
+    <label class="check wide"><input type="checkbox" name="keep_data" value="1" checked> Keep a copy of the data directory (SQLite files)</label>
+    <label class="check wide"><input type="checkbox" name="delete_backups" value="1"> Also delete its backups (on this server and in the bucket)</label>
+    <div class="wide buttons"><button class="danger">Delete {{.Name}}</button></div>
   </form>
 </section>
 {{end}}
