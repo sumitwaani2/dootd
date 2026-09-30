@@ -29,6 +29,8 @@ const (
 	purposeCFToken         = "settings:cloudflare_token"
 	settingCFRanges        = "cloudflare_ip_ranges"
 	SettingDashboardDomain = "dashboard_domain"
+	// The dashboard domain that was last reached through Cloudflare with AOP.
+	settingDashboardReached = "dashboard_reached"
 )
 
 // Timings.
@@ -69,6 +71,7 @@ type Manager struct {
 	mu        sync.RWMutex
 	aop       *AOP
 	dashHost  string
+	dashSeen  string // dashboard domain reached through Cloudflare with AOP
 	routes    []Route
 	hosts     []hostEntry
 	hostZone  map[string]string // host -> zone id
@@ -157,6 +160,9 @@ func NewManager(ctx context.Context, cfg Config, st *store.Store, box *secrets.B
 	if v, ok, _ := st.GetSetting(ctx, SettingDashboardDomain); ok {
 		m.dashHost = string(v)
 	}
+	if v, ok, _ := st.GetSetting(ctx, settingDashboardReached); ok {
+		m.dashSeen = string(v)
+	}
 	if err := m.loadState(ctx); err != nil {
 		return nil, err
 	}
@@ -185,6 +191,7 @@ func (m *Manager) DashboardReady() bool {
 func (m *Manager) DashboardProblem() string {
 	m.mu.RLock()
 	h := m.dashHost
+	seen := h != "" && m.dashSeen == h
 	zid := m.hostZone[h]
 	enforced := m.enforce[zid]
 	var zs ZoneStatus
@@ -199,16 +206,40 @@ func (m *Manager) DashboardProblem() string {
 		return "waiting for its DNS record and Origin CA certificate"
 	case m.cfg.AOP && !enforced:
 		return "waiting for Cloudflare to activate authenticated origin pulls for " + zoneName(zs, h)
+	case seen:
+		// A request already came through Cloudflare with our AOP
+		// certificate: the zone and its SSL/TLS mode work, whatever the
+		// API says or whether the token may read the mode.
+		return ""
 	case zs.Status != "" && zs.Status != "active":
 		return fmt.Sprintf("the zone %s is %q at Cloudflare, not active: finish adding the domain to Cloudflare (switch its nameservers)", zoneName(zs, h), zs.Status)
 	case zs.SSLMode == "" && zs.Warning != "":
-		return zs.Warning
+		return zs.Warning + ", or open https://" + h + "/ once: a visit through Cloudflare proves it works"
 	case zs.SSLMode == "":
-		return "checking the SSL/TLS mode of " + zoneName(zs, h)
+		return "checking the SSL/TLS mode of " + zoneName(zs, h) + "; opening https://" + h + "/ once also proves it works"
 	case zs.SSLMode != "full" && zs.SSLMode != "strict":
 		return fmt.Sprintf("the SSL/TLS mode of %s is %q, so Cloudflare cannot reach dootd; set it to Full (strict) (Settings → Zones)", zoneName(zs, h), zs.SSLMode)
 	}
 	return ""
+}
+
+// DashboardReached records that a request for the dashboard domain came
+// through Cloudflare with a verified AOP client certificate (called by the
+// router). It is remembered across restarts, per domain.
+func (m *Manager) DashboardReached(host string) {
+	m.mu.Lock()
+	if host != m.dashHost || m.dashSeen == host {
+		m.mu.Unlock()
+		return
+	}
+	m.dashSeen = host
+	m.mu.Unlock()
+	m.log.Info("dashboard domain reached through Cloudflare", "domain", host)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := m.store.SetSetting(ctx, settingDashboardReached, []byte(host)); err != nil {
+		m.log.Warn("saving the dashboard domain state", "err", err)
+	}
 }
 
 func zoneName(zs ZoneStatus, host string) string {
@@ -386,6 +417,7 @@ func (m *Manager) Serve(ctx context.Context) error {
 	}
 	fl := m.Filter.Listen(ln, m.log, m.SetupOpen)
 	m.Router.SetupOpen = m.SetupOpen
+	m.Router.DashboardReached = m.DashboardReached
 	m.Router.SetDashboardHost(m.DashboardHost())
 	srv := &http.Server{
 		Handler:           m.Router,
