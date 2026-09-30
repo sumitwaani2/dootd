@@ -6,7 +6,7 @@
   <form method="post" action="/apps" class="grid">
     {{template "csrf" $.CSRF}}
     <label class="wide">GitHub repository <input name="repo" value="{{.Repo}}" required placeholder="https://github.com/you/blog" list="repos">
-      <small>The app is named after the repository (e.g. <code>my_blog</code> → <code>my-blog</code>). It is deployed from the repository's GitHub releases, which its release workflow publishes (docs/app-contract.md §2).</small></label>
+      <small>The app is named after the repository (e.g. <code>my_blog</code> becomes <code>my-blog</code>). It is deployed from the repository's GitHub releases, which its release workflow publishes (<a href="https://github.com/sumitwaani2/dootd/blob/main/docs/app-contract.md" target="_blank" rel="noopener">app contract</a>).</small></label>
     {{with $.Data.Repos}}<datalist id="repos">{{range .}}<option value="https://github.com/{{.FullName}}">{{end}}</datalist>{{end}}
     <label class="wide">Domain <input name="domain" value="{{.Domain}}" placeholder="blog.example.com"><small>DNS record and certificate are created in Cloudflare</small></label>
     {{if $.Data.BucketSet}}
@@ -25,7 +25,7 @@
       <label>CPU cores <input name="cpu" value="{{.CPU}}" size="4"></label>
       <label>Processes <input name="pids" value="{{.Pids}}" size="5"></label>
     </fieldset>
-    <div class="wide"><button class="primary">Create app</button> <a href="/">Cancel</a></div>
+    <div class="wide buttons"><button class="primary">Create app</button> <a class="button" href="/">Cancel</a></div>
   </form>
   {{end}}
 </section>

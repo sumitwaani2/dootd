@@ -82,7 +82,7 @@ func (s *Server) loginSubmit(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusInternalServerError
 		}
 		s.Log.Warn("failed sign-in", "ip", ip, "one_time", oneTime, "reason", err)
-		s.render(w, r, status, "login", "Sign in", "", s.loginData(r, map[string]any{"Error": err.Error(), "Email": email, "Next": next}))
+		s.render(w, r, status, "login", "Sign in", "", s.loginData(r, map[string]any{"Error": sentence(err.Error()), "Email": email, "Next": next}))
 		return
 	}
 	s.Log.Info("signed in", "ip", ip, "one_time", oneTime, "setup_address", edge.IsDirect(r))
@@ -105,7 +105,7 @@ func (s *Server) setupSubmit(w http.ResponseWriter, r *http.Request) {
 		tok, err = s.Auth.CompleteSetup(r.Context(), session(r), email, r.PostFormValue("password"), edge.ClientIP(r), r.UserAgent())
 	}
 	if err != nil {
-		s.render(w, r, http.StatusUnprocessableEntity, "setup", "Set up your account", "", map[string]any{"Email": email, "Error": err.Error()})
+		s.render(w, r, http.StatusUnprocessableEntity, "setup", "Set up your account", "", map[string]any{"Email": email, "Error": sentence(err.Error())})
 		return
 	}
 	s.Log.Info("admin account set up", "ip", edge.ClientIP(r))
@@ -247,7 +247,11 @@ func (s *Server) newAppPage(w http.ResponseWriter, r *http.Request) {
 func (s *Server) newAppData(ctx context.Context, in apps.Input, err error) map[string]any {
 	d := map[string]any{"In": in}
 	if err != nil {
-		d["Errors"] = strings.Split(err.Error(), "\n")
+		var list []string
+		for _, e := range strings.Split(err.Error(), "\n") {
+			list = append(list, sentence(e))
+		}
+		d["Errors"] = list
 	}
 	// Offer the bucket's backup folders (docs/architecture.md).
 	fctx, fcancel := context.WithTimeout(ctx, 10*time.Second)

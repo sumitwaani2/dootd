@@ -22,11 +22,11 @@
       <td><a href="/apps/{{.Name}}"><b>{{.Name}}</b></a></td>
       <td>{{template "state" .Status.State}}{{if .Pending}} <a class="badge s-deploying" href="/deployments/{{.Pending}}">deploying</a>{{end}}{{if .NeedsRestart}} <span class="badge s-backoff">restart needed</span>{{end}}</td>
       <td>{{if .Domain}}<a href="https://{{.Domain}}/" rel="noopener" target="_blank">{{.Domain}}</a>{{else}}<span class="muted">-</span>{{end}}</td>
-      <td><code>{{if .Status.Release}}{{.Status.Release}}{{else}}-{{end}}</code></td>
-      <td>{{bytes .MemBytes}}</td>
-      <td>{{.Requests}}{{if .Requests5xx}} <small class="error-text">({{.Requests5xx}} 5xx)</small>{{end}}</td>
-      <td>{{if .BackupProblem}}<span class="badge s-failed" title="{{.BackupProblem}}">backup failed</span>{{else}}{{ago .LastBackup}}{{end}}</td>
-      <td><a href="/apps/{{.Name}}/logs">logs</a></td>
+      <td>{{if .Status.Release}}<code>{{.Status.Release}}</code>{{else}}<span class="muted">-</span>{{end}}</td>
+      <td class="nowrap">{{if .MemBytes}}{{bytes .MemBytes}}{{else}}<span class="muted">-</span>{{end}}</td>
+      <td class="nowrap">{{.Requests}}{{if .Requests5xx}} <small class="error-text">({{.Requests5xx}} 5xx)</small>{{end}}</td>
+      <td class="nowrap">{{if .BackupProblem}}<span class="badge s-failed" title="{{.BackupProblem}}">backup failed</span>{{else}}{{ago .LastBackup}}{{end}}</td>
+      <td class="end"><a href="/apps/{{.Name}}/logs">logs</a></td>
     </tr>
     {{end}}
     </tbody>

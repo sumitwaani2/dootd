@@ -9,12 +9,12 @@
   <h2>Apps now</h2>
   <div data-refresh="10" id="apps-now">
   <table>
-    <thead><tr><th>App</th><th>State</th><th>CPU (of a core)</th><th>Memory</th><th>Processes</th><th>Disk I/O</th><th>Requests/min</th><th>p95</th><th>Restarts</th></tr></thead>
+    <thead><tr><th>App</th><th>State</th><th>CPU (of a core)</th><th>Memory</th><th>Processes</th><th>Disk read · write</th><th>Requests/min</th><th>p95</th><th>Restarts</th></tr></thead>
     <tbody>{{range .Data.Apps}}
     <tr>
       <td><a href="/apps/{{.Name}}#usage">{{.Name}}</a></td><td>{{template "state" .Status.State}}</td>
       {{if .OK}}<td>{{printf "%.1f" .Now.CPU}}%</td><td>{{bytes .Now.Mem}} <small class="muted">/ {{bytes .Now.MemLimit}}</small></td><td>{{.Now.Pids}}</td>
-      <td>{{bytes (int64 .Now.IORead)}}/s ↓ {{bytes (int64 .Now.IOWrite)}}/s ↑</td><td>{{printf "%.0f" .Now.Req}}</td>
+      <td class="nowrap">{{bytes (int64 .Now.IORead)}}/s · {{bytes (int64 .Now.IOWrite)}}/s</td><td>{{printf "%.0f" .Now.Req}}</td>
       <td>{{if eq .Now.P95 .Now.P95}}{{printf "%.0f" .Now.P95}} ms{{else}}-{{end}}</td>{{else}}<td colspan="6" class="muted">no samples yet</td>{{end}}
       <td>{{.Status.Restarts}}{{if .Status.OOMKills}} <small class="error-text">({{.Status.OOMKills}} OOM)</small>{{end}}</td>
     </tr>{{else}}<tr><td colspan="9" class="muted">No apps.</td></tr>{{end}}
