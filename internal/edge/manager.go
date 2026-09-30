@@ -1036,9 +1036,15 @@ type serverErrors struct {
 // Write logs the first error at once, then counts the rest and logs a
 // summary every minute while they continue.
 func (e *serverErrors) Write(p []byte) (int, error) {
+	msg := strings.TrimSpace(string(p))
+	// A connection closed before any TLS byte (the installer's readiness
+	// probe, a port check) is harmless: not worth a warning.
+	if strings.HasSuffix(msg, ": EOF") {
+		return len(p), nil
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.latest = strings.TrimSpace(string(p))
+	e.latest = msg
 	if e.timer != nil {
 		e.n++
 		return len(p), nil
