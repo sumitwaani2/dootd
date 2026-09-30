@@ -201,5 +201,14 @@ Tasks 46–47 built a CLI bootstrap (`dootd init`, `init --restore`, recovery ki
   - Dashboard clock times name the server's timezone; verified with the VPS in Asia/Kolkata and in UTC (schedule and files stay UTC)
   - Measured: 25 MB idle RSS with 5 apps, 0.6 ms p50 proxy overhead, restart of 5 apps ~2 s, reboot to serving ~20 s
   - _Requirements: 3.2, 7.1, 10.5, 10.6_
+- [x] 65. Second real run (`v1.0.0-rc2`, Ubuntu 26.04, 1 vCPU, 1.6 GB, real Cloudflare, R2 and GitHub Actions releases), driven only through the installer and the dashboard from outside, after cleaning up the first run; fixes for what it found (D43)
+  - Covered: installer refusals (OS, checksum) and install in 3 s; setup address, one-time password, account; Cloudflare, GitHub and bucket settings (bad values refused, secrets never shown or stored in clear); 5 apps (private and public repos, name from `Dootd_E2E.App5`); releases built by the samples' own workflows (a failing test publishes nothing); failed deploys (missing asset, checksum, no checksums.txt, wrong CPU, path escape, unhealthy → rollback) never touching the running release; kept releases, rollback, queue; headers, WebSockets and SSE through Cloudflare; env vars; isolation and cgroup limits; OOM; crash loop; logs; backups under load, restore, a corrupted backup refused, bucket outage and retry; delete + re-add from the bucket folder; dashboard domain move; account and sessions; sign-in rate limit; recovery by re-running the installer; reboot; disk warning; master key and schema guards
+  - AOP was required as soon as Cloudflare reported the certificate active, but its edge rolls it out over ~5 minutes: 2–5 % of requests failed with 520 meanwhile, after the first setup of a zone and after every re-upload. dootd now waits 10 minutes before requiring it (measured afterwards: no failures)
+  - TLS handshake errors were logged at debug level, which hid that cause; they are now logged (first at once, then a count per minute)
+  - A domain in no Cloudflare zone (a typo) was accepted and only failed in the background; the dashboard and Add app forms now refuse it
+  - Two restores within the same second shared a `.pre-restore-*` folder, so the first safety copy was overwritten; folder names are now unique
+  - Not verifiable with the test token (no Zone Settings permission): the SSL mode warning and the one-click Full (strict) fix (Req 12.6); the zone relied on page rules instead
+  - Measured: 26.6 MB idle RSS with 5 apps, 0.18 % CPU, 18 MB binary; reboot to serving in ~10 s; update by re-running the installer in 3 s
+  - _Requirements: 3.2, 7.2, 12.5, 16.1_
 - [x] 49. ~~7-day soak test with 5 apps on a 1 GB VPS~~ (skipped: not possible in the test environment; the real Cloudflare and R2 runs are tasks 64 and 65)
 - [ ] 50. Tag `v1.0.0`
