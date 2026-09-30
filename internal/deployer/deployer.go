@@ -397,10 +397,15 @@ func (d *Deployer) deploy(ctx context.Context, cfg AppConfig, j job, lg *logs.Lo
 	name, tag := cfg.Base.Name, j.release
 	d.setRelease(j.id, tag, "")
 
-	// A release still kept on the server needs no download.
+	// A release still kept on the server needs no download, unless its
+	// files have gone missing: then it is downloaded again.
 	if kept, err := d.release(ctx, name, tag); err == nil {
-		lg.Writef("release %s is still kept on this server; switching to it (no download)", tag)
-		return d.activate(ctx, cfg, kept, j.id, lg)
+		if d.releaseIntact(kept) {
+			lg.Writef("release %s is still kept on this server; switching to it (no download)", tag)
+			return d.activate(ctx, cfg, kept, j.id, lg)
+		}
+		lg.Writef("release %s is recorded but its files are missing on this server; downloading it again", tag)
+		d.removeRelease(name, tag, lg)
 	}
 
 	// 1. The GitHub release and its assets. The running release keeps
@@ -511,7 +516,23 @@ func (d *Deployer) rollback(ctx context.Context, cfg AppConfig, j job, lg *logs.
 		return err
 	}
 	d.setRelease(j.id, rel.ID, "")
+	if !d.releaseIntact(rel) {
+		return fmt.Errorf("the files of release %s are missing on this server; deploy %s from the release list instead (it is downloaded again)", rel.ID, rel.ID)
+	}
 	return d.activate(ctx, cfg, rel, j.id, lg)
+}
+
+// releaseIntact reports whether a kept release's binary is still on disk.
+func (d *Deployer) releaseIntact(rel Release) bool {
+	if len(rel.Run) == 0 {
+		return false
+	}
+	bin := rel.Run[0]
+	if !filepath.IsAbs(bin) {
+		bin = filepath.Join(d.Layout.ReleaseDir(rel.App, rel.ID), bin)
+	}
+	fi, err := os.Stat(bin)
+	return err == nil && fi.Mode().IsRegular()
 }
 
 // activate stops the old release, runs the pre-deploy hook, switches the
