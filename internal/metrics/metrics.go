@@ -1,6 +1,6 @@
 // Package metrics samples host, dootd and per-app resource usage and
 // request statistics every 10 seconds, keeps the last hour in memory and
-// stores 1-minute rollups for 7 days (docs/architecture.md §13).
+// stores 1-minute rollups for 7 days (docs/architecture.md).
 package metrics
 
 import (

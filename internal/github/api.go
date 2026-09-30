@@ -1,6 +1,6 @@
 // Package github is a minimal GitHub REST client: token validation, repo
 // listing, and the releases an app is deployed from (docs/architecture.md
-// §11). The personal access token is only sent to the API host.
+// §7). The personal access token is only sent to the API host.
 package github
 
 import (
@@ -15,8 +15,6 @@ import (
 	"regexp"
 	"strings"
 	"time"
-
-	"github.com/sumitwaani2/dootd/internal/testenv"
 )
 
 // DefaultBase is the GitHub REST API.
@@ -25,16 +23,13 @@ const DefaultBase = "https://api.github.com"
 // API is a minimal GitHub REST client.
 type API struct {
 	Token string
-	Base  string // default DefaultBase (DOOTD_TEST_GITHUB_API in the E2E tests)
+	Base  string // default DefaultBase (unit tests use a local server)
 	HTTP  *http.Client
 }
 
 func (a *API) base() string {
-	switch {
-	case a.Base != "":
+	if a.Base != "" {
 		return a.Base
-	case testenv.GitHubAPI() != "":
-		return testenv.GitHubAPI()
 	}
 	return DefaultBase
 }

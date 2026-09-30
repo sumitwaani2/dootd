@@ -26,7 +26,6 @@ import (
 	"github.com/sumitwaani2/dootd/internal/secrets"
 	"github.com/sumitwaani2/dootd/internal/store"
 	"github.com/sumitwaani2/dootd/internal/supervisor"
-	"github.com/sumitwaani2/dootd/internal/testenv"
 	"github.com/sumitwaani2/dootd/internal/users"
 	"github.com/sumitwaani2/dootd/internal/web"
 )
@@ -128,7 +127,7 @@ func serve(log *slog.Logger) error {
 	dash := &web.Server{
 		Auth: authSvc, Apps: appSvc, Dep: dep, Sup: sup, Edge: edgeMgr, Store: st,
 		Backups: bk, Metrics: mc,
-		Thresholds: web.Thresholds{DiskPercent: testenv.WarnPercent(85), MemoryPercent: testenv.WarnPercent(90), CertDays: 14},
+		Thresholds: web.Thresholds{DiskPercent: 85, MemoryPercent: 90, CertDays: 14},
 		Layout:     lay, Version: buildinfo.Version, Log: log.With("component", "web"),
 	}
 	h, err := dash.Handler()
@@ -234,13 +233,11 @@ func waitUploads(log *slog.Logger, bk *backup.Service, max time.Duration) {
 	}
 }
 
-// newEdge creates the edge manager and its router (not started yet). The
-// public IPs and API base are only overridden by the E2E tests.
+// newEdge creates the edge manager and its router (not started yet).
 func newEdge(ctx context.Context, log *slog.Logger, lay layout.Layout, st *store.Store, box *secrets.Box,
 	sup *supervisor.Supervisor, dep *deployer.Deployer, au *auth.Auth) (*edge.Manager, error) {
 	m, err := edge.NewManager(ctx, edge.Config{
-		Listen: ":443", PublicIPv4: testenv.PublicIPv4(), PublicIPv6: testenv.PublicIPv6(),
-		AOP: true, APIBase: testenv.CloudflareAPI(), DataRoot: lay.Root, AOPRollout: testenv.AOPRollout(),
+		Listen: ":443", AOP: true, DataRoot: lay.Root,
 		SetupPending: func() bool { return !au.SetupUntil().IsZero() },
 	}, st, box, log)
 	if err != nil {
@@ -297,7 +294,7 @@ func keys(m map[string]bool) []string {
 	return out
 }
 
-// tuneMemory keeps dootd inside its 30 MB resident budget (Req 1.3): a
+// tuneMemory keeps dootd inside its 30 MB resident budget: a
 // soft heap limit makes the GC run more often before the heap grows, and
 // freed memory is handed back to the kernel every 2 minutes instead of
 // being kept for reuse. GOMEMLIMIT / GOGC in the environment override.

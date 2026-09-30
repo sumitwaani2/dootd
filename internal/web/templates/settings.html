@@ -12,7 +12,7 @@
     {{template "csrf" $csrf}}
     <label class="wide">{{if .TokenSet}}Replace API token{{else}}API token{{end}}
       <input type="password" name="token" autocomplete="off" required>
-      <small>Permissions: Zone Read, DNS Edit, SSL and Certificates Edit, Zone Settings Edit (see docs/setup.md).</small></label>
+      <small>Permissions: Zone Read, DNS Edit, SSL and Certificates Edit, Zone Settings Edit (see the README).</small></label>
     <div class="wide"><button>Verify and save</button></div>
   </form>
   <form method="post" action="/settings/edge-sync" class="inline">{{template "csrf" $csrf}}<button>Sync now</button></form> <small class="muted">DNS records, certificates and origin pulls are also synced every 6 hours and after every change.</small>

@@ -53,7 +53,7 @@ type App struct {
 
 // Input is the form data for creating or editing an app. Empty optional
 // fields mean "default" on create; edits send every field. The name is
-// never entered: it is derived from the repository name (Req 8.2).
+// never entered: it is derived from the repository name.
 type Input struct {
 	Repo, Domain      string
 	Memory, CPU, Pids string
@@ -318,7 +318,7 @@ type Created struct {
 	RestoreErr error
 }
 
-// Create stores and registers a new app (Req 8.1–8.4), restoring the
+// Create stores and registers a new app, restoring the
 // chosen bucket folder into it. It does not deploy.
 func (s *Service) Create(ctx context.Context, in Input) (Created, error) {
 	a, err := s.create(ctx, in)
@@ -425,7 +425,7 @@ func (s *Service) pushConfig(ctx context.Context, a App) error {
 	return s.dep.UpdateConfig(cfg)
 }
 
-// SetEnv sets (or replaces) an env var (Req 7.3). A restart applies it.
+// SetEnv sets (or replaces) an env var. A restart applies it.
 func (s *Service) SetEnv(ctx context.Context, name, key, value string) error {
 	key = strings.TrimSpace(key)
 	if err := app.ValidateEnvName(key); err != nil {
@@ -471,7 +471,7 @@ type DeleteResult struct {
 	Warnings       []string // cleanup steps that failed
 }
 
-// Delete stops and removes an app (Req 7.4): process, cgroup, user,
+// Delete stops and removes an app: process, cgroup, user,
 // releases, logs, caches, routing, DNS record and certificate. DATA_DIR is
 // moved aside if keepData is set, otherwise deleted. Backups are kept
 // unless deleteBackups is set.

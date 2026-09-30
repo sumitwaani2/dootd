@@ -4,7 +4,7 @@
 #   curl -fsSL https://github.com/sumitwaani2/dootd/releases/latest/download/install.sh | sudo bash
 #
 # It asks nothing and installs no system packages; nothing is ever built on
-# the server (docs/architecture.md §8, §11):
+# the server (docs/architecture.md §4, §7):
 #   1. checks the host (Ubuntu 24.04+, systemd, cgroup v2, x86_64/aarch64)
 #   2. downloads dootd-linux-<arch>, verifies it against checksums.txt
 #      (nothing is changed on a mismatch)
@@ -17,7 +17,6 @@
 # dashboard domain).
 #
 #   DOOTD_VERSION=v1.0.0   install that release instead of the latest
-#   DOOTD_BASE_URL=URL     download from URL/<file> instead of GitHub (testing)
 set -euo pipefail
 
 REPO="sumitwaani2/dootd"
@@ -55,9 +54,7 @@ check_host() {
 }
 
 download() {
-  if [ -n "${DOOTD_BASE_URL:-}" ]; then
-    BASE="${DOOTD_BASE_URL%/}"
-  elif [ -n "${DOOTD_VERSION:-}" ]; then
+  if [ -n "${DOOTD_VERSION:-}" ]; then
     BASE="https://github.com/${REPO}/releases/download/${DOOTD_VERSION}"
   else
     BASE="https://github.com/${REPO}/releases/latest/download"

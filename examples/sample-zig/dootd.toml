@@ -1,3 +1,0 @@
-contract    = 2
-run         = "zig-out/bin/sample-zig"
-health_path = "/healthz"

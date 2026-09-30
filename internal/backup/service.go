@@ -20,7 +20,6 @@ import (
 	"github.com/sumitwaani2/dootd/internal/s3"
 	"github.com/sumitwaani2/dootd/internal/secrets"
 	"github.com/sumitwaani2/dootd/internal/store"
-	"github.com/sumitwaani2/dootd/internal/testenv"
 )
 
 // Kinds.
@@ -38,8 +37,7 @@ const (
 	StatusFailed  = "failed"
 )
 
-// Policy (docs/architecture.md §12). It is fixed; only the end-to-end
-// tests shorten it (internal/testenv).
+// Policy (docs/architecture.md, Backups). It is fixed.
 const (
 	Interval       = 3 * time.Hour
 	Retention      = 48 * time.Hour
@@ -162,8 +160,8 @@ func (s *Service) UploadPending(ctx context.Context) {
 	}
 }
 
-func (s *Service) interval() time.Duration  { return testenv.BackupInterval(Interval) }
-func (s *Service) retention() time.Duration { return testenv.BackupRetention(Retention) }
+func (s *Service) interval() time.Duration  { return Interval }
+func (s *Service) retention() time.Duration { return Retention }
 
 // Policy returns the schedule interval and retention.
 func (s *Service) Policy() (time.Duration, time.Duration) { return s.interval(), s.retention() }
@@ -231,7 +229,7 @@ func (s *Service) client(ctx context.Context) (*s3.Client, s3.Config, bool, erro
 }
 
 // Folder is where the backups of app live in the bucket: one folder per
-// app at the bucket root (docs/architecture.md §12).
+// app at the bucket root (docs/architecture.md).
 func Folder(app string) string { return app + "/" }
 
 // ---------------------------------------------------------------- rows

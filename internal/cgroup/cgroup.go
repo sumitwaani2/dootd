@@ -298,7 +298,7 @@ func (g *Group) Populated() (bool, error) {
 // It deliberately does NOT use cgroup.kill: on the Ubuntu 24.04 kernels we
 // tested, once cgroup.kill had been written for a group, every later child
 // spawned into that group with clone3(CLONE_INTO_CGROUP) was SIGKILLed right
-// away, which broke restarts. See scripts/e2e/phase1.sh (crash loop test).
+// away, which broke restarts (docs/architecture.md, decision D10).
 func (g *Group) Kill() error {
 	signaled := map[int]bool{}
 	for pass := 0; pass < 20; pass++ {

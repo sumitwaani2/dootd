@@ -19,7 +19,7 @@ import (
 	"time"
 )
 
-// Setup address (docs/architecture.md §8.1): while setup is open, a
+// Setup address (docs/architecture.md): while setup is open, a
 // connection from outside Cloudflare is let through the IP filter as a
 // setupConn. It gets a self-signed certificate, no client-certificate
 // requirement, and only ever reaches the dashboard.

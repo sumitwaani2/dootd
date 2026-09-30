@@ -25,7 +25,7 @@ type RestoreResult struct {
 	StartError string
 }
 
-// Restore replaces an app's databases with backup id (Req 15):
+// Restore replaces an app's databases with backup id:
 // fetch and verify the archive, and only then stop the app, move the
 // current databases (with -wal/-shm) into DATA_DIR/.pre-restore-<time>/,
 // put the restored files in place owned by the app user, and start the

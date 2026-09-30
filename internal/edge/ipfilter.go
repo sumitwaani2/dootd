@@ -1,7 +1,7 @@
 // Package edge is dootd's public front door: a :443 listener that only
 // accepts Cloudflare, TLS with Cloudflare Origin CA certificates and
 // Authenticated Origin Pulls, and a Host-header router that proxies to
-// apps on 127.0.0.1 (docs/architecture.md §9).
+// apps on 127.0.0.1 (docs/architecture.md).
 package edge
 
 import (
@@ -92,7 +92,7 @@ func (f *IPFilter) Rejected() int64 { return f.rejected.Load() }
 
 // filteredListener closes non-Cloudflare connections before any TLS work,
 // except while setupOpen reports true: then they are let through as
-// setup connections (docs/architecture.md §8.1).
+// setup connections (docs/architecture.md).
 type filteredListener struct {
 	net.Listener
 	f         *IPFilter

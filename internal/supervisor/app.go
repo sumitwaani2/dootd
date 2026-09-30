@@ -36,7 +36,7 @@ const (
 	Crashed  State = "crashed" // too many failures; needs a manual start
 )
 
-// Policy holds the timing rules (docs/architecture.md §10.3).
+// Policy holds the timing rules (docs/architecture.md).
 type Policy struct {
 	HealthTimeout  time.Duration // max time from spawn to healthy
 	StopGrace      time.Duration // SIGTERM → SIGKILL

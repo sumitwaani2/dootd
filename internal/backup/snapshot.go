@@ -1,7 +1,7 @@
 // Package backup takes consistent snapshots of the SQLite databases in each
 // app's DATA_DIR, archives them (tar + zstd, with a manifest of SHA-256
 // sums), keeps the newest copies locally, uploads them to S3-compatible
-// storage, applies retention and restores them (docs/architecture.md §12).
+// storage, applies retention and restores them (docs/architecture.md).
 package backup
 
 import (

@@ -1,6 +1,6 @@
 // Package auth implements dashboard authentication: one admin user with an
 // argon2id password hash, server-side sessions, CSRF tokens and login
-// rate limiting (docs/architecture.md §14).
+// rate limiting (docs/architecture.md).
 package auth
 
 import (

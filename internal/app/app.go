@@ -61,7 +61,7 @@ func ValidateName(name string) error {
 	return nil
 }
 
-// NameFromRepo derives the app name from a repository name (Req 8.2):
+// NameFromRepo derives the app name from a repository name:
 // lowercased, with '_' and '.' turned into '-'. The result must still pass
 // ValidateName.
 func NameFromRepo(repo string) (string, error) {

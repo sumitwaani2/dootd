@@ -11,7 +11,7 @@ import (
 	"github.com/sumitwaani2/dootd/internal/metrics"
 )
 
-// Thresholds for dashboard warnings (Req 16.4).
+// Thresholds for dashboard warnings.
 type Thresholds struct {
 	DiskPercent   float64 // default 85
 	MemoryPercent float64 // default 90
@@ -210,7 +210,7 @@ func (s *Server) metricsPage(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, http.StatusOK, "metrics", "Monitoring", "metrics", data)
 }
 
-// metricWarnings adds host and app resource warnings (Req 16.4).
+// metricWarnings adds host and app resource warnings.
 func (s *Server) metricWarnings(ctx context.Context, rows []AppRow) []string {
 	if s.Metrics == nil {
 		return nil

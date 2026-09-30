@@ -17,14 +17,14 @@ import (
 	"github.com/sumitwaani2/dootd/internal/store"
 )
 
-// Session lifetimes (Req 5.4).
+// Session lifetimes.
 const (
 	IdleTimeout     = 7 * 24 * time.Hour
 	AbsoluteTimeout = 30 * 24 * time.Hour
 	touchEvery      = 5 * time.Minute
 )
 
-// Rate limits (Req 5.5).
+// Rate limits.
 const (
 	failWindow    = 15 * time.Minute
 	failsPerIP    = 5
@@ -104,7 +104,7 @@ func (a *Auth) Admin(ctx context.Context) (string, error) {
 }
 
 // SetAdmin creates or replaces the admin credentials and revokes every
-// session (Req 2.6).
+// session.
 func (a *Auth) SetAdmin(ctx context.Context, email, password string) error {
 	email, err := NormalizeEmail(email)
 	if err != nil {

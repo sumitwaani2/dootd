@@ -13,7 +13,7 @@ import (
 	"github.com/sumitwaani2/dootd/internal/store"
 )
 
-// One-time password (docs/architecture.md §8.1, Req 2.3–2.5). The installer
+// One-time password (docs/architecture.md). The installer
 // (`dootd setup-host`) creates it; signing in with it gives a session that
 // can only set the admin email and password.
 const (

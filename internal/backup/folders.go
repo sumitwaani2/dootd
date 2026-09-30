@@ -13,7 +13,7 @@ import (
 )
 
 // Folders lists the backup folders in the bucket (one per app name), for
-// the Add app form (docs/architecture.md §12.1). ok is false without a bucket.
+// the Add app form (docs/architecture.md). ok is false without a bucket.
 func (s *Service) Folders(ctx context.Context) (folders []string, ok bool, err error) {
 	cl, _, ok, err := s.client(ctx)
 	if err != nil || !ok {

@@ -1,5 +1,5 @@
 // Package layout defines the on-disk layout under the data root
-// (docs/architecture.md §6) and creates per-app directories with the right
+// (docs/architecture.md) and creates per-app directories with the right
 // ownership and modes.
 package layout
 
@@ -11,7 +11,7 @@ import (
 	"github.com/sumitwaani2/dootd/internal/users"
 )
 
-// Fixed locations. dootd has no config file (docs/architecture.md §6).
+// Fixed locations. dootd has no config file (docs/architecture.md).
 const (
 	DataRoot  = "/var/lib/dootd"
 	ConfigDir = "/etc/dootd"

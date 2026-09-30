@@ -1,5 +1,5 @@
 // Package deployer implements the deploy pipeline (docs/architecture.md
-// §11): GitHub release → download + checksum → safe unpack → dootd.toml and
+// §7): GitHub release → download + checksum → safe unpack → dootd.toml and
 // ELF check → stop old → pre-deploy backup → switch → start + health check,
 // with automatic rollback when the new release is unhealthy. dootd never
 // builds anything.

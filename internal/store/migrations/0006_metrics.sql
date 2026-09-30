@@ -1,4 +1,4 @@
--- One row per scope per minute, kept 7 days (docs/architecture.md §13).
+-- One row per scope per minute, kept 7 days (docs/architecture.md §9).
 -- scope: "_host", "_dootd" or an app name. Rates are per minute; NULL
 -- latency means no requests in that minute.
 CREATE TABLE metrics_1m (

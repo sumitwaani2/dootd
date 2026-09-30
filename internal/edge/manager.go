@@ -50,19 +50,12 @@ const (
 	AOPRollout = 10 * time.Minute
 )
 
-// Config configures the edge. Nothing here is user-configurable: the
-// public IPs and the API base are only overridden by the E2E tests.
+// Config configures the edge. Nothing here is user-configurable.
 type Config struct {
-	Listen     string // ":443"
-	PublicIPv4 string // "" = auto-detect
-	PublicIPv6 string // "" = auto-detect, "off" = no AAAA records
-	AOP        bool   // zone-level Authenticated Origin Pulls (always on in dootd serve)
-	APIBase    string // Cloudflare API base (tests)
-	DataRoot   string
-	// AOPRollout overrides the default AOPRollout (tests; 0 = the default,
-	// negative = enforce at once).
-	AOPRollout time.Duration
-	// SetupPending reports whether a one-time password is pending (§8.1).
+	Listen   string // ":443"
+	AOP      bool   // zone-level Authenticated Origin Pulls (always on in dootd serve)
+	DataRoot string
+	// SetupPending reports whether a one-time password is pending.
 	SetupPending func() bool
 }
 
@@ -273,7 +266,7 @@ func (m *Manager) SetupOpen() bool {
 	return !m.DashboardReady() || (m.cfg.SetupPending != nil && m.cfg.SetupPending())
 }
 
-// SetDashboardHost sets the dashboard domain (Req 7.2): it needs the
+// SetDashboardHost sets the dashboard domain: it needs the
 // Cloudflare token, must not be an app's domain, is routed at once and set
 // up in the background. The old domain's DNS records and certificate are
 // removed.
@@ -497,7 +490,7 @@ func (m *Manager) Run(ctx context.Context) {
 }
 
 func (m *Manager) client(token string) *cloudflare.Client {
-	return &cloudflare.Client{Token: token, Base: m.cfg.APIBase}
+	return &cloudflare.Client{Token: token}
 }
 
 func (m *Manager) refreshIPs(ctx context.Context) {
@@ -540,7 +533,7 @@ func (m *Manager) token(ctx context.Context) (string, error) {
 
 // SetToken verifies and stores the Cloudflare API token (sealed). It
 // returns the zone names the token can read and the permissions it
-// appears to lack (Req 7.1), found by reading one zone.
+// appears to lack, found by reading one zone.
 func (m *Manager) SetToken(ctx context.Context, token string) (zones, missing []string, err error) {
 	c := m.client(token)
 	if err := c.Verify(ctx); err != nil {
@@ -870,10 +863,6 @@ func (m *Manager) syncAOP(ctx context.Context, c *cloudflare.Client, z cloudflar
 // connections without a certificate meanwhile (the IP filter stays on),
 // and syncs again when the time is up.
 func (m *Manager) rolledOut(zoneID string, changed bool) bool {
-	wait := m.cfg.AOPRollout
-	if wait == 0 {
-		wait = AOPRollout
-	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := time.Now()
@@ -884,7 +873,7 @@ func (m *Manager) rolledOut(zoneID string, changed bool) bool {
 	if changed || !pending {
 		since = now
 	}
-	left := wait - now.Sub(since)
+	left := AOPRollout - now.Sub(since)
 	if left <= 0 {
 		delete(m.rollout, zoneID)
 		return true
@@ -954,33 +943,16 @@ func (m *Manager) publicIPs(ctx context.Context) (string, string, error) {
 	v4, v6 := m.pubV4, m.pubV6
 	m.mu.RUnlock()
 	if v4 == "" {
-		v4 = m.cfg.PublicIPv4
-		if v4 == "" {
-			ip, err := DetectIP(ctx, "tcp4")
-			if err != nil {
-				return "", "", fmt.Errorf("detecting the server's public IPv4 address failed: %w", err)
-			}
-			v4 = ip
+		ip, err := DetectIP(ctx, "tcp4")
+		if err != nil {
+			return "", "", fmt.Errorf("detecting the server's public IPv4 address failed: %w", err)
 		}
-		if a, err := netip.ParseAddr(v4); err != nil || !a.Is4() {
-			return "", "", fmt.Errorf("public IPv4 %q is not an IPv4 address", v4)
-		}
+		v4 = ip
 	}
 	if v6 == "" {
-		switch m.cfg.PublicIPv6 {
-		case "off":
-			v6 = "off"
-		case "":
-			if ip, err := DetectIP(ctx, "tcp6"); err == nil {
-				v6 = ip
-			} else {
-				v6 = "off"
-			}
-		default:
-			if a, err := netip.ParseAddr(m.cfg.PublicIPv6); err != nil || !a.Is6() {
-				return "", "", fmt.Errorf("public IPv6 %q is not an IPv6 address", m.cfg.PublicIPv6)
-			}
-			v6 = m.cfg.PublicIPv6
+		v6 = "off" // no IPv6: no AAAA records
+		if ip, err := DetectIP(ctx, "tcp6"); err == nil {
+			v6 = ip
 		}
 	}
 	m.mu.Lock()
