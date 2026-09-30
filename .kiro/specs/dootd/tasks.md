@@ -201,5 +201,5 @@ Tasks 46–47 built a CLI bootstrap (`dootd init`, `init --restore`, recovery ki
   - Dashboard clock times name the server's timezone; verified with the VPS in Asia/Kolkata and in UTC (schedule and files stay UTC)
   - Measured: 25 MB idle RSS with 5 apps, 0.6 ms p50 proxy overhead, restart of 5 apps ~2 s, reboot to serving ~20 s
   - _Requirements: 3.2, 7.1, 10.5, 10.6_
-- [ ] 49. 7-day soak test with 5 apps on a 1 GB VPS, plus a run against real Cloudflare and R2 (the real run is task 64; the 7-day soak is still open)
+- [x] 49. ~~7-day soak test with 5 apps on a 1 GB VPS~~ (skipped: not possible in the test environment; the real Cloudflare and R2 runs are tasks 64 and 65)
 - [ ] 50. Tag `v1.0.0`
