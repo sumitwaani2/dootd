@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	stdlog "log"
 	"log/slog"
 	"net"
 	"net/http"
@@ -40,6 +41,13 @@ const (
 	syncEvery       = 6 * time.Hour
 	ipRefreshEvery  = 24 * time.Hour
 	aopActivateWait = 3 * time.Minute
+	// AOPRollout is how long dootd waits, after Cloudflare reports a newly
+	// uploaded client certificate active (or zone-level AOP newly turned
+	// on), before it requires the certificate. Cloudflare's edge servers
+	// pick the change up gradually: on a real VPS some of them kept
+	// connecting without it for almost 5 minutes, and every such request
+	// failed with error 520 (D43).
+	AOPRollout = 10 * time.Minute
 )
 
 // Config configures the edge. Nothing here is user-configurable: the
@@ -51,6 +59,9 @@ type Config struct {
 	AOP        bool   // zone-level Authenticated Origin Pulls (always on in dootd serve)
 	APIBase    string // Cloudflare API base (tests)
 	DataRoot   string
+	// AOPRollout overrides the default AOPRollout (tests; 0 = the default,
+	// negative = enforce at once).
+	AOPRollout time.Duration
 	// SetupPending reports whether a one-time password is pending (§8.1).
 	SetupPending func() bool
 }
@@ -74,8 +85,10 @@ type Manager struct {
 	dashSeen  string // dashboard domain reached through Cloudflare with AOP
 	routes    []Route
 	hosts     []hostEntry
-	hostZone  map[string]string // host -> zone id
-	enforce   map[string]bool   // zone id -> require AOP client certs
+	hostZone  map[string]string      // host -> zone id
+	enforce   map[string]bool        // zone id -> require AOP client certs
+	rollout   map[string]time.Time   // zone id -> AOP ready at Cloudflare since (not enforced yet)
+	rollTimer map[string]*time.Timer // zone id -> sync when the rollout ends
 	hostState map[string]*HostStatus
 	zoneState map[string]*ZoneStatus
 	lastSync  time.Time
@@ -138,6 +151,8 @@ func NewManager(ctx context.Context, cfg Config, st *store.Store, box *secrets.B
 		Filter:    NewIPFilter(),
 		hostZone:  map[string]string{},
 		enforce:   map[string]bool{},
+		rollout:   map[string]time.Time{},
+		rollTimer: map[string]*time.Timer{},
 		hostState: map[string]*HostStatus{},
 		zoneState: map[string]*ZoneStatus{},
 	}
@@ -193,7 +208,10 @@ func (m *Manager) DashboardProblem() string {
 	h := m.dashHost
 	seen := h != "" && m.dashSeen == h
 	zid := m.hostZone[h]
-	enforced := m.enforce[zid]
+	// While Cloudflare rolls the AOP certificate out (D43) it is in place
+	// at Cloudflare, just not required yet: that counts.
+	_, rolling := m.rollout[zid]
+	enforced := m.enforce[zid] || rolling
 	var zs ZoneStatus
 	if z := m.zoneState[zid]; z != nil {
 		zs = *z
@@ -266,6 +284,9 @@ func (m *Manager) SetDashboardHost(ctx context.Context, host string) error {
 	}
 	if _, err := m.token(ctx); err != nil {
 		return errors.New("save the Cloudflare token first")
+	}
+	if err := m.CheckZone(ctx, host); err != nil {
+		return err
 	}
 	m.mu.Lock()
 	old := m.dashHost
@@ -400,6 +421,10 @@ func (m *Manager) tlsConfig() *tls.Config {
 			enforce := m.cfg.AOP && m.enforce[m.hostZone[host]]
 			pool := m.aop.Pool
 			m.mu.RUnlock()
+			// No client certificate is asked for while Cloudflare rolls
+			// ours out (D43): edge servers that don't have it yet present
+			// Cloudflare's shared origin-pull certificate instead, which
+			// would fail verification.
 			if enforce {
 				c.ClientAuth = tls.RequireAndVerifyClientCert
 				c.ClientCAs = pool
@@ -426,7 +451,7 @@ func (m *Manager) Serve(ctx context.Context) error {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    64 << 10,
-		ErrorLog:          slog.NewLogLogger(m.log.Handler(), slog.LevelDebug),
+		ErrorLog:          stdlog.New(&serverErrors{log: m.log}, "", 0),
 	}
 	go func() {
 		<-ctx.Done()
@@ -743,16 +768,24 @@ func (m *Manager) syncZone(ctx context.Context, c *cloudflare.Client, z cloudfla
 
 	enforced := false
 	if m.cfg.AOP {
-		enforced, err = m.syncAOP(ctx, c, z, aop, zs)
-		if err != nil {
+		ready, changed, err := m.syncAOP(ctx, c, z, aop, zs)
+		switch {
+		case err != nil:
 			errs = append(errs, fmt.Errorf("authenticated origin pulls: %w", err))
 			// Keep enforcing if it was on and the API is merely failing.
 			if prev != nil && m.enforceFor(z.ID) && zs.AOPSerial == aop.Client.SerialNumber.String() {
 				enforced = true
 			}
+		case ready:
+			enforced = m.rolledOut(z.ID, changed)
 		}
 	}
 	zs.AOP = aopLabel(m.cfg.AOP, enforced)
+	m.mu.RLock()
+	if _, rolling := m.rollout[z.ID]; rolling && !enforced {
+		zs.AOP = "rolling out"
+	}
+	m.mu.RUnlock()
 	if len(errs) > 0 {
 		zs.Error = errors.Join(errs...).Error()
 	}
@@ -780,9 +813,11 @@ func (m *Manager) enforceFor(zoneID string) bool {
 }
 
 // syncAOP makes sure Cloudflare holds our current client certificate for
-// the zone and has zone-level AOP enabled. It returns whether the origin
-// may require client certificates for this zone.
-func (m *Manager) syncAOP(ctx context.Context, c *cloudflare.Client, z cloudflare.Zone, aop *AOP, zs *ZoneStatus) (bool, error) {
+// the zone and has zone-level AOP enabled. It returns whether both are in
+// place at Cloudflare (ready) and whether this call had to upload the
+// certificate or turn AOP on (changed), which Cloudflare's edge then needs
+// time to roll out (see rolledOut).
+func (m *Manager) syncAOP(ctx context.Context, c *cloudflare.Client, z cloudflare.Zone, aop *AOP, zs *ZoneStatus) (ready, changed bool, err error) {
 	serial := aop.Client.SerialNumber.String()
 	if zs.AOPCertID != "" && zs.AOPSerial == serial {
 		cur, err := c.AOPCert(ctx, z.ID, zs.AOPCertID)
@@ -791,7 +826,7 @@ func (m *Manager) syncAOP(ctx context.Context, c *cloudflare.Client, z cloudflar
 			m.log.Warn("our AOP certificate is gone from Cloudflare; uploading it again", "zone", z.Name)
 			zs.AOPCertID = ""
 		case err != nil:
-			return false, err
+			return false, false, err
 		}
 	}
 	oldID := ""
@@ -799,22 +834,24 @@ func (m *Manager) syncAOP(ctx context.Context, c *cloudflare.Client, z cloudflar
 		oldID = zs.AOPCertID
 		up, err := c.UploadAOPCert(ctx, z.ID, string(aop.ClientPEM), string(aop.ClientKey))
 		if err != nil {
-			return false, err
+			return false, false, err
 		}
 		zs.AOPCertID, zs.AOPSerial = up.ID, serial
+		changed = true
 		m.log.Info("uploaded AOP client certificate", "zone", z.Name, "id", up.ID)
 	}
 	if err := m.waitAOPActive(ctx, c, z.ID, zs.AOPCertID); err != nil {
-		return false, err
+		return false, changed, err
 	}
 	on, err := c.AOPEnabled(ctx, z.ID)
 	if err != nil {
-		return false, err
+		return false, changed, err
 	}
 	if !on {
 		if err := c.SetAOPEnabled(ctx, z.ID, true); err != nil {
-			return false, err
+			return false, changed, err
 		}
+		changed = true
 		m.log.Info("enabled zone-level authenticated origin pulls", "zone", z.Name)
 	}
 	if oldID != "" && oldID != zs.AOPCertID {
@@ -822,7 +859,45 @@ func (m *Manager) syncAOP(ctx context.Context, c *cloudflare.Client, z cloudflar
 			m.log.Warn("deleting the previous AOP certificate failed", "zone", z.Name, "id", oldID, "err", err)
 		}
 	}
-	return true, nil
+	return true, changed, nil
+}
+
+// rolledOut decides whether to require client certificates for a zone
+// whose AOP setup is in place at Cloudflare. A zone that is enforced
+// already stays enforced, unless the sync just uploaded the certificate or
+// turned AOP on: then, and for a zone that was never enforced, dootd
+// waits AOPRollout for Cloudflare's edge to catch up, accepting
+// connections without a certificate meanwhile (the IP filter stays on),
+// and syncs again when the time is up.
+func (m *Manager) rolledOut(zoneID string, changed bool) bool {
+	wait := m.cfg.AOPRollout
+	if wait == 0 {
+		wait = AOPRollout
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now()
+	since, pending := m.rollout[zoneID]
+	if !changed && !pending && m.enforce[zoneID] {
+		return true
+	}
+	if changed || !pending {
+		since = now
+	}
+	left := wait - now.Sub(since)
+	if left <= 0 {
+		delete(m.rollout, zoneID)
+		return true
+	}
+	if !pending || changed {
+		m.log.Info("waiting for Cloudflare to roll out authenticated origin pulls before requiring them", "zone_id", zoneID, "for", left.Round(time.Second))
+	}
+	m.rollout[zoneID] = since
+	if t := m.rollTimer[zoneID]; t != nil {
+		t.Stop()
+	}
+	m.rollTimer[zoneID] = time.AfterFunc(left+time.Second, m.SyncInBackground)
+	return false
 }
 
 func (m *Manager) waitAOPActive(ctx context.Context, c *cloudflare.Client, zoneID, id string) error {
@@ -972,6 +1047,63 @@ func (m *Manager) Status(ctx context.Context) Status {
 	}
 	sort.Slice(s.Zones, func(i, j int) bool { return s.Zones[i].Name < s.Zones[j].Name })
 	return s
+}
+
+// serverErrors receives net/http's own error lines (mostly failed TLS
+// handshakes, e.g. Cloudflare connecting without the AOP client
+// certificate) and logs them at most once a minute with a count, so such a
+// problem shows in the journal without flooding it.
+type serverErrors struct {
+	log    *slog.Logger
+	mu     sync.Mutex
+	n      int
+	latest string
+	timer  *time.Timer // set while a one-minute window is open
+}
+
+// Write logs the first error at once, then counts the rest and logs a
+// summary every minute while they continue.
+func (e *serverErrors) Write(p []byte) (int, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.latest = strings.TrimSpace(string(p))
+	if e.timer != nil {
+		e.n++
+		return len(p), nil
+	}
+	e.log.Warn("a connection failed before a request was read", "err", e.latest)
+	e.timer = time.AfterFunc(time.Minute, e.flush)
+	return len(p), nil
+}
+
+func (e *serverErrors) flush() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.n == 0 {
+		e.timer = nil
+		return
+	}
+	e.log.Warn("more connections failed before a request was read", "count", e.n, "in", "1m", "latest", e.latest)
+	e.n = 0
+	e.timer = time.AfterFunc(time.Minute, e.flush)
+}
+
+// CheckZone reports a hostname that no zone of the Cloudflare account
+// serves (a typo, or a domain on another account), so the form can say so
+// at once instead of the background sync failing later. Without a token,
+// or when the API cannot be reached, it reports nothing: the sync shows
+// those problems.
+func (m *Manager) CheckZone(ctx context.Context, host string) error {
+	token, err := m.token(ctx)
+	if err != nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	if _, err := m.client(token).ZoneFor(ctx, host); errors.Is(err, cloudflare.ErrNoZone) {
+		return err
+	}
+	return nil
 }
 
 // SyncInBackground starts a sync (e.g. after an app or domain was added)
