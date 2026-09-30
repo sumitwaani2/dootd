@@ -203,7 +203,7 @@ func (a *API) ReleaseByTag(ctx context.Context, r Repo, tag string) (Release, er
 	var rel Release
 	if _, err := a.do(ctx, repoPath(r)+"/releases/tags/"+url.PathEscape(tag), &rel); err != nil {
 		if errors.Is(err, ErrNotFound) {
-			return rel, fmt.Errorf("%s has no release %s (or the token cannot read it)", r, tag)
+			return rel, fmt.Errorf("%s has no release %s (for a private repository, set a GitHub token with Contents: Read-only in Settings)", r, tag)
 		}
 		return rel, err
 	}
