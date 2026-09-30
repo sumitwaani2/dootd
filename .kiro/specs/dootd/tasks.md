@@ -211,4 +211,4 @@ Tasks 46–47 built a CLI bootstrap (`dootd init`, `init --restore`, recovery ki
   - Measured: 26.6 MB idle RSS with 5 apps, 0.18 % CPU, 18 MB binary; reboot to serving in ~10 s; update by re-running the installer in 3 s
   - _Requirements: 3.2, 7.2, 12.5, 16.1_
 - [x] 49. ~~7-day soak test with 5 apps on a 1 GB VPS~~ (skipped: not possible in the test environment; the real Cloudflare and R2 runs are tasks 64 and 65)
-- [ ] 50. Tag `v1.0.0`
+- [x] 50. Tag `v1.0.0` (same code as `v1.0.0-rc3`, which was installed on the real VPS as an update and checked before the test resources were cleaned up)

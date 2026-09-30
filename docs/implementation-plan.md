@@ -13,7 +13,7 @@ This plan builds dootd in phases. Each phase ends with something that works and 
 | 4 | Dashboard | Login + the full click-to-deploy flow in the browser | ✅ |
 | 5 | Backups | Scheduled, pre-deploy and manual backups to S3/R2, plus restore | ✅ |
 | 6 | Monitoring | Host and app metrics, request stats, charts, warnings | ✅ |
-| 7 | Install, simplify → v1.0 | One command over SSH, everything else in the dashboard, hardening | 🟨 |
+| 7 | Install, simplify → v1.0 | One command over SSH, everything else in the dashboard, hardening | ✅ |
 
 Phases 1–3 are mostly used through the CLI or a config file, so the risky parts (cgroups, builds, TLS) get proven before any UI work. Phase 4 connects everything to the browser.
 
