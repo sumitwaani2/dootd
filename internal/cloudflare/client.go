@@ -168,8 +168,11 @@ func (c *Client) ZoneFor(ctx context.Context, hostname string) (Zone, error) {
 			}
 		}
 	}
-	return Zone{}, fmt.Errorf("no Cloudflare zone found for %s (is the domain on this Cloudflare account, and can the token read it?)", hostname)
+	return Zone{}, fmt.Errorf("%w for %s (is the domain on this Cloudflare account, and can the token read it?)", ErrNoZone, hostname)
 }
+
+// ErrNoZone is returned by ZoneFor when no readable zone serves the hostname.
+var ErrNoZone = errors.New("no Cloudflare zone found")
 
 // DNSRecord is one DNS record.
 type DNSRecord struct {

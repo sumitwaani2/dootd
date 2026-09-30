@@ -28,9 +28,11 @@ mkecho slowstart -delay 4s
 create_app echo --data domain=echo.example.test >/dev/null
 create_app other --data domain=app.other.test >/dev/null
 create_app slowstart --data domain=slow.example.test >/dev/null
-# A domain in no zone of the account (the app is never deployed).
+# A domain in no zone of the account is refused by the form.
 mkrepo lost
-create_app lost --data domain=app.missing.test >/dev/null
+R="$(create_app lost --data domain=app.missing.test)"
+check "Add app refuses a domain in no zone of the account" bash -c "[[ '$R' == 422* ]] && grep -qF 'no Cloudflare zone found for app.missing.test' '$OUT/post.html'"
+check "  ... and creates nothing" test ! -e "$DATA_ROOT/apps/lost"
 for a in echo other slowstart; do check "deploy $a" deploy_is succeeded "$a" v1; done
 
 say "Cloudflare token"
@@ -43,7 +45,6 @@ check "token not stored in plain text" bash -c "! grep -aqF '$TOKEN' $DATA_ROOT/
 say "Sync: DNS, certificates, AOP"
 refresh_csrf /settings
 post /settings/edge-sync >/dev/null
-check "sync reports the domain without a zone" flash_has "no Cloudflare zone found for app.missing.test" /settings
 for h in dootd.example.test echo.example.test slow.example.test app.other.test; do
   check "proxied A record for $h" dns_is "$h"
 done

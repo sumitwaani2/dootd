@@ -240,7 +240,7 @@ func newEdge(ctx context.Context, log *slog.Logger, lay layout.Layout, st *store
 	sup *supervisor.Supervisor, dep *deployer.Deployer, au *auth.Auth) (*edge.Manager, error) {
 	m, err := edge.NewManager(ctx, edge.Config{
 		Listen: ":443", PublicIPv4: testenv.PublicIPv4(), PublicIPv6: testenv.PublicIPv6(),
-		AOP: true, APIBase: testenv.CloudflareAPI(), DataRoot: lay.Root,
+		AOP: true, APIBase: testenv.CloudflareAPI(), DataRoot: lay.Root, AOPRollout: testenv.AOPRollout(),
 		SetupPending: func() bool { return !au.SetupUntil().IsZero() },
 	}, st, box, log)
 	if err != nil {

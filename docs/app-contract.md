@@ -190,12 +190,15 @@ static void on_term(int s) { (void)s; stop = 1; }
 
 ### Zig
 
-The std API changes between Zig versions, so check the docs for **your `ZIG_VERSION`**. In 0.14 / 0.15 it looks roughly like this:
+The std API changes between Zig versions, so check the docs for **your `ZIG_VERSION`**. In 0.16 (the samples' version) `main` receives the environment ([`examples/sample-zig/src/main.zig`](../examples/sample-zig/src/main.zig)):
 
 ```zig
-const port_str = try std.process.getEnvVarOwned(allocator, "PORT");
-const port = try std.fmt.parseInt(u16, port_str, 10);
-const data_dir = try std.process.getEnvVarOwned(allocator, "DATA_DIR");
+pub fn main(init: std.process.Init) !void {
+    const env = init.environ_map;
+    const port = try std.fmt.parseInt(u16, env.get("PORT").?, 10);
+    const data_dir = env.get("DATA_DIR").?;
+    // ...
+}
 ```
 
 ---

@@ -117,7 +117,7 @@ The first pass of this phase added a CLI bootstrap (`dootd init`, `init --restor
 - [x] App name = repository name; bucket folder per app; Add app restores a chosen folder's newest backup.
 - [x] E2E scripts use only the installer and the dashboard (`scripts/e2e/phase1.sh` … `phase7.sh`, 459 checks).
 - [x] dootd never builds (D38): apps are tested, built and released by their own GitHub Actions workflow; dootd deploys a chosen GitHub release (download, checksum, safe unpack, ELF check). Removes the Zig toolchain manager, the builder, git cloning, build cgroups, `make` and the swapfile.
-- [ ] Soak test: 5 apps running for 7 days on a 1 GB VPS, with real Cloudflare and R2.
+- [x] ~~Soak test: 5 apps running for 7 days on a 1 GB VPS~~ (skipped: not possible in the test environment). Instead, full end-to-end runs on a real VPS with real Cloudflare, R2 and GitHub releases.
 
 **Done when:** a fresh VPS goes from `curl | sudo bash` to a deployed app in under 10 minutes without touching SSH again, and v1.0.0 is tagged.
 

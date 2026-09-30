@@ -100,8 +100,16 @@ func (s *Service) Restore(ctx context.Context, app string, id int64, lg *logs.Lo
 		res.Restarted = true
 	}
 
+	// Never reuse a folder: two restores within the same second would
+	// otherwise overwrite the first safety copy.
 	stamp := time.Now().UTC().Format("20060102T150405Z")
 	pre := filepath.Join(dataDir, ".pre-restore-"+stamp)
+	for i := 2; ; i++ {
+		if _, err := os.Lstat(pre); os.IsNotExist(err) {
+			break
+		}
+		pre = filepath.Join(dataDir, fmt.Sprintf(".pre-restore-%s-%d", stamp, i))
+	}
 	current, err := FindDatabases(dataDir)
 	if err != nil {
 		start()

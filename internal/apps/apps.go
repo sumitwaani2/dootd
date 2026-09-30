@@ -37,6 +37,7 @@ type Edge interface {
 	SetRoutes([]edge.Route)
 	SyncInBackground()
 	RemoveHost(ctx context.Context, host string) error
+	CheckZone(ctx context.Context, host string) error
 }
 
 // App is one app as configured in the dashboard.
@@ -244,6 +245,10 @@ func (s *Service) validate(ctx context.Context, in Input, existing *App) (App, e
 			errs = append(errs, err)
 		} else if a.Domain == s.dashboardHost() {
 			errs = append(errs, errors.New("that domain is used by the dashboard"))
+		} else if s.edge != nil && (existing == nil || existing.Domain != a.Domain) {
+			if err := s.edge.CheckZone(ctx, a.Domain); err != nil {
+				errs = append(errs, err)
+			}
 		}
 	}
 	parse := func(field, v, def string, f func(string) error) {

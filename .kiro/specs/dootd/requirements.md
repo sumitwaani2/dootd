@@ -60,7 +60,7 @@ Reference docs: #[[file:docs/architecture.md]] and #[[file:docs/app-contract.md]
 #### Acceptance Criteria
 
 1. WHILE setup is open, THE dootd SHALL accept connections on :443 from any address that is not a Cloudflare address and serve them the dashboard with a self-signed certificate. The dashboard is the only thing reachable this way; app domains SHALL never be served on such a connection.
-2. Setup SHALL be open WHILE no dashboard domain is ready, OR WHILE an unused, unexpired one-time password exists. A dashboard domain is ready once it has its Origin CA certificate, AOP is enforced for its zone, the zone is active, and the zone's SSL/TLS mode is known to be Full or Full (strict). THE dashboard SHALL say which of these it is waiting for.
+2. Setup SHALL be open WHILE no dashboard domain is ready, OR WHILE an unexpired one-time password exists that has not been used to set up the account. A dashboard domain is ready once it has its Origin CA certificate and AOP is enforced for its zone (Requirement 12.5), and either a request for it has arrived through Cloudflare with dootd's AOP client certificate, or the zone is active and its SSL/TLS mode is known to be Full or Full (strict). THE dashboard SHALL say which of these it is waiting for.
 3. WHILE setup is open AND a dashboard domain is ready, THE setup address SHALL accept only the one-time password, not the admin password.
 4. WHEN setup closes, THE dootd SHALL close non-Cloudflare connections before the TLS handshake again, exactly as in Requirement 12, and answer any request still arriving on an open setup connection with a page pointing to the dashboard domain.
 5. ON the setup address, THE dootd SHALL use the TCP peer address as the client IP (never a client-supplied header) for rate limiting and logs.
@@ -110,7 +110,7 @@ Reference docs: #[[file:docs/architecture.md]] and #[[file:docs/app-contract.md]
 #### Acceptance Criteria
 
 1. WHEN a Cloudflare token is saved, THE dootd SHALL verify it and list any missing permissions from: Zone Read, DNS Edit, SSL and Certificates Edit, Zone Settings Edit.
-2. WHEN a dashboard domain is saved, THE dootd SHALL require a Cloudflare token, reject a domain used by an app, then create the proxied DNS record, the Origin CA certificate and the AOP setup for it, and show its progress. WHEN the domain is replaced, THE dootd SHALL remove the old domain's DNS records and revoke its certificate.
+2. WHEN a dashboard domain (or an app domain) is saved, THE dootd SHALL reject a domain that no zone of the Cloudflare account serves. WHEN a dashboard domain is saved, THE dootd SHALL require a Cloudflare token, reject a domain used by an app, then create the proxied DNS record, the Origin CA certificate and the AOP setup for it, and show its progress. WHEN the domain is replaced, THE dootd SHALL remove the old domain's DNS records and revoke its certificate.
 3. WHEN a GitHub PAT is saved, THE dootd SHALL validate it against the GitHub API and show which account it belongs to. The token needs only *Contents: Read-only*; it is used to list releases and download their assets.
 4. WHEN S3 settings (endpoint, region, bucket, access key, secret) are saved, THE dootd SHALL perform a test upload, read-back and delete, and save the settings only if that succeeds.
 5. THE dootd SHALL detect the server's public IPv4 (and IPv6, if any) itself; the user never enters an IP address.
@@ -181,7 +181,7 @@ Reference docs: #[[file:docs/architecture.md]] and #[[file:docs/app-contract.md]
 2. WHEN a TCP connection comes from an address outside Cloudflare's published IP ranges, THE dootd SHALL close it before the TLS handshake, except while setup is open (Requirement 3).
 3. THE dootd SHALL refresh Cloudflare's IP ranges every 24 hours and fall back to the last known good list or the built-in list.
 4. THE dootd SHALL serve an Origin CA certificate for each configured hostname, choose it by SNI, fail the handshake for unknown SNI, and renew certificates with less than 30 days of validity.
-5. THE dootd SHALL upload a client certificate signed by its own private CA to every zone it serves, enable zone-level AOP, and require a valid client certificate from that CA once Cloudflare reports it active. AOP cannot be turned off.
+5. THE dootd SHALL upload a client certificate signed by its own private CA to every zone it serves, enable zone-level AOP, and require a valid client certificate from that CA once Cloudflare reports it active and 10 minutes have passed for Cloudflare's edge to roll it out (the same wait applies after the certificate is uploaded again or AOP is turned on again). AOP cannot be turned off.
 6. IF a zone's SSL mode is not Full (strict), THEN THE dashboard SHALL show a warning with a one-click fix, and dootd SHALL NOT change the mode automatically.
 
 ### Requirement 13: Routing and proxy

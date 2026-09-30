@@ -32,6 +32,19 @@ func BackupRetention(def time.Duration) time.Duration {
 	return duration("DOOTD_TEST_BACKUP_RETENTION", def)
 }
 
+// AOPRollout returns the test wait before AOP is required ("0s" = at
+// once), or 0 for the default.
+func AOPRollout() time.Duration {
+	d, err := time.ParseDuration(os.Getenv("DOOTD_TEST_AOP_ROLLOUT"))
+	switch {
+	case err != nil || d < 0:
+		return 0
+	case d == 0:
+		return -1
+	}
+	return d
+}
+
 // WarnPercent returns the test disk/memory warning threshold, or def.
 func WarnPercent(def float64) float64 {
 	if v, err := strconv.ParseFloat(os.Getenv("DOOTD_TEST_WARN_PERCENT"), 64); err == nil && v > 0 {

@@ -170,7 +170,7 @@ Running the same command again is how dootd is **updated** (it installs the late
 
 Before a dashboard domain exists there is no way to reach the dashboard through Cloudflare, so dootd has a **setup address**: `https://<server IP>`, served with a self-signed certificate (`/var/lib/dootd/setup/`, created on first start). The browser warns about the certificate once.
 
-- **Setup is open** while no dashboard domain is ready, **or** while an unused, unexpired one-time password exists. A dashboard domain is *ready* once dootd holds its Origin CA certificate, AOP is enforced for its zone (§9.3), and either a request for it has arrived through Cloudflare with our AOP client certificate (remembered per domain), or the zone is active and its SSL/TLS mode is known to be Full or Full (strict) (D41). The settings and home pages say which of these is still missing.
+- **Setup is open** while no dashboard domain is ready, **or** while an unexpired one-time password exists that has not been used to set up the account. A dashboard domain is *ready* once dootd holds its Origin CA certificate, AOP is enforced for its zone (§9.3, including the rollout wait), and either a request for it has arrived through Cloudflare with our AOP client certificate (remembered per domain), or the zone is active and its SSL/TLS mode is known to be Full or Full (strict) (D41). The settings and home pages say which of these is still missing.
 - While setup is open, a connection from outside Cloudflare's ranges is let through the IP filter, marked as a *setup connection*, and gets the self-signed certificate without a client-certificate requirement. Every request on it goes to the dashboard, whatever its `Host`; **apps are never served on a setup connection**. Connections from Cloudflare addresses are handled exactly as before (§9).
 - On a setup connection the client IP is the TCP peer; `CF-Connecting-IP` is ignored (it could be forged). CSRF checks compare `Origin` with `https://<Host>` of the request.
 - While a dashboard domain is ready, the setup address accepts **only the one-time password**, never the admin password, so the admin password is never exposed outside Cloudflare.
@@ -201,6 +201,7 @@ dootd runs as **root**. It needs this to bind :443, create users, manage cgroups
 
 ### 9.1 Listener and IP filter
 - dootd listens only on `:443`. There is no `:80`. Enable Cloudflare's "Always Use HTTPS" instead.
+- Errors that `net/http` reports for a connection before any request (mostly failed TLS handshakes, e.g. Cloudflare connecting without the AOP client certificate) are logged at most once a minute, with a count and the latest message.
 - A custom `net.Listener` checks the TCP peer address against Cloudflare's IPv4 and IPv6 ranges. **Connections from any other address are closed before the TLS handshake** (the only exception is the setup address while setup is open, §8.1).
 - The ranges are fetched from `GET /client/v4/ips` at startup and every 24 h, with a list compiled into the binary as a fallback. The last good list is stored in `settings` and used on the next start. An empty or implausible list (e.g. a /4) is refused, so a bad response can neither lock Cloudflare out nor open the port to everyone.
 - Rejected connections are counted (Settings → Cloudflare) and logged at most once a minute.
@@ -216,7 +217,7 @@ dootd runs as **root**. It needs this to bind :443, create users, manage cgroups
 The IP filter alone only proves the traffic comes from *someone's* Cloudflare account. **Zone-level AOP with our own CA** proves it comes from *yours*:
 - On first run, dootd creates a private CA (RSA 3072, 10 years) and a client certificate signed by it (RSA 2048, 5 years), stored in `aop/`. RSA is used because it is what Cloudflare documents for AOP uploads.
 - For each zone it serves, dootd uploads the client certificate and key through the zone-level AOP API (`origin_tls_client_auth`) and turns the zone setting `tls_client_auth` **on** ([Cloudflare docs](https://developers.cloudflare.com/ssl/origin-configuration/authenticated-origin-pull/set-up/zone-level/)).
-- The TLS config uses `ClientAuth: RequireAndVerifyClientCert` with dootd's CA as `ClientCAs`, **per zone and only once Cloudflare reports our certificate `active` and AOP enabled**. Enforcing earlier would break the site, because Cloudflare would not yet present the certificate.
+- The TLS config uses `ClientAuth: RequireAndVerifyClientCert` with dootd's CA as `ClientCAs`, **per zone and only once Cloudflare reports our certificate `active` and AOP enabled, plus 10 minutes** (D43). Enforcing earlier would break the site: Cloudflare's edge servers pick up a newly uploaded certificate gradually. On the real VPS, for almost 5 minutes some of them connected without a certificate or with Cloudflare's shared origin-pull certificate, and those requests failed with error 520. The same wait applies whenever a sync has to upload the certificate again or turn AOP back on. Meanwhile no client certificate is asked for (verifying "if given" would reject the shared one) and the IP filter stays on; a timer syncs again when the wait is over.
 - The enforcement state is saved in `edge_zones`, so after a restart it applies immediately, even if the Cloudflare API is unreachable. If a sync fails only because the API is down, enforcement stays on.
 - If someone disables AOP or deletes our certificate in the Cloudflare dashboard, the next sync re-uploads and re-enables it (otherwise the origin would reject all traffic).
 - dootd renews the client certificate 60 days before it expires: it uploads the new one, waits until it is active, then deletes the old one.
@@ -488,6 +489,7 @@ To stay inside the memory budget dootd sets a soft heap limit of 12 MB (`debug.S
 | D40 | One fixed asset name per architecture (`app-linux-<arch>.tar.gz`) plus `checksums.txt`, static musl binaries | No per-app naming rules; binaries don't depend on the server's libc; the checksum catches truncated or swapped downloads |
 | D41 | The dashboard domain is ready only when a request for it has come through Cloudflare with AOP, or its zone is active and in Full or Full (strict) mode (the last mode read is kept when the API fails) | Found on the first real VPS run: a zone in Flexible mode (Cloudflare connects to :80, error 521) closed the setup address and locked the user out of the dashboard. A real visit is the strongest proof, and works when the token cannot read the mode or a per-host rule overrides it |
 | D42 | Everything is stored and scheduled in UTC; the dashboard shows clock times in the server's timezone with its name ("IST", "UTC") | The server's timezone never changes behaviour (backups stay at 00:00, 03:00 … UTC); the label keeps the times unambiguous |
+| D43 | Require the AOP client certificate only 10 minutes after Cloudflare reports it active (and after every re-upload or re-enable); log net/http's handshake errors with a count once a minute; check that a domain belongs to a Cloudflare zone when it is saved | Found on the second real VPS run: Cloudflare's edge rolls a new certificate out over several minutes, and enforcing at once made 2–5 % of requests fail with 520 for that long. The failures were invisible because handshake errors were logged at debug level. A domain in no zone used to be accepted and only failed later in the background |
 
 ## 18. Test-only environment variables
 
@@ -500,5 +502,6 @@ The end-to-end scripts run dootd against fakes. These variables are read only by
 | `DOOTD_TEST_GITHUB_API` | GitHub API base URL (the fake from `e2etool ghmock`) |
 | `DOOTD_TEST_BACKUP_INTERVAL`, `DOOTD_TEST_BACKUP_RETENTION` | Short backup schedule (e.g. `30s`, `10m`) |
 | `DOOTD_TEST_WARN_PERCENT` | Disk and memory warning threshold |
+| `DOOTD_TEST_AOP_ROLLOUT` | Wait before AOP is required (`0s` = at once; the fake API has no rollout) |
 
 `install.sh` also reads `DOOTD_BASE_URL` (download from a local server) for the installer test.

@@ -204,6 +204,7 @@ test_env() {
     echo "Environment=DOOTD_TEST_GITHUB_API=http://127.0.0.1:8902"
     echo "Environment=DOOTD_TEST_PUBLIC_IPV4=$PUB_IP"
     echo "Environment=DOOTD_TEST_PUBLIC_IPV6=off"
+    echo "Environment=DOOTD_TEST_AOP_ROLLOUT=0s"
     for kv in "$@"; do echo "Environment=DOOTD_TEST_$kv"; done
   } > "$DROPIN"
   systemctl daemon-reload
