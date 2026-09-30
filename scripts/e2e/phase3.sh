@@ -28,9 +28,10 @@ mkecho slowstart -delay 4s
 create_app echo --data domain=echo.example.test >/dev/null
 create_app other --data domain=app.other.test >/dev/null
 create_app slowstart --data domain=slow.example.test >/dev/null
-# A domain in no zone of the account (the repo is never deployed).
-post /apps --data type=c --data-urlencode "repo=file://$GIT/lost.git" --data branch=main --data domain=app.missing.test >/dev/null
-for a in echo other slowstart; do check "deploy $a" deploy_is succeeded "$a"; done
+# A domain in no zone of the account (the app is never deployed).
+mkrepo lost
+create_app lost --data domain=app.missing.test >/dev/null
+for a in echo other slowstart; do check "deploy $a" deploy_is succeeded "$a" v1; done
 
 say "Cloudflare token"
 post /settings/cloudflare-token --data token=bad >/dev/null

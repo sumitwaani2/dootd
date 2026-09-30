@@ -12,13 +12,13 @@ permissions:
 jobs:
   phase1:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - name: Phase 1 - run supervised apps
+      - name: Phase 1 - sample releases, supervised apps
         run: sudo env "PATH=$PATH" GOTOOLCHAIN=local ./scripts/e2e/phase1.sh
 
 
@@ -30,7 +30,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - name: Phase 2 - build and deploy
+      - name: Phase 2 - release deploys
         run: sudo env "PATH=$PATH" GOTOOLCHAIN=local ./scripts/e2e/phase2.sh
 
   phase3:

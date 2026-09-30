@@ -91,7 +91,7 @@ for spec in "one:1:256M:$APP_HOST" "half:0.5:256M:" "mem:1:256M:" "oom:1:64M:" "
   IFS=: read -r name cpu memlim domain <<<"$spec"
   mkecho "$name"
   create_app "$name" --data cpu="$cpu" --data memory="$memlim" --data domain="$domain" >/dev/null
-  check "deploy $name" deploy_is succeeded "$name"
+  check "deploy $name" deploy_is succeeded "$name" v1
   PORTS[$name]="$(port_of "$name")"
   if [ "$first" = 1 ]; then
     first=0

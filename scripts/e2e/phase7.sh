@@ -96,11 +96,13 @@ say "An app with data and backups"
 post /settings/s3 --data endpoint=http://127.0.0.1:9000 --data region=us-east-1 --data bucket="$BUCKET" \
   --data access_key="$S3_KEY" --data-urlencode "secret_key=$S3_SECRET" >/dev/null
 check "S3 settings saved" flash_has "A test file was uploaded" /settings
-mkrepo web examples/sample-c
+check "sample-c's release workflow" sample_dist sample-c
+mkrepo web
+publish web v1 "$E2E/dist-sample-c"
 create_app web --data domain=$APP_HOST --data memory=128M >/dev/null
 check "app DNS record" wait_for 30 dns_is "$APP_HOST"
 wait_for 30 test -f "$DATA_ROOT/certs/$APP_HOST/cert.pem"
-check "deploy succeeds" deploy_is succeeded web
+check "deploy succeeds" deploy_is succeeded web v1
 for _ in $(seq 1 6); do site "$APP_HOST" / >/dev/null; done
 
 say "Update: run install.sh again"
@@ -151,7 +153,7 @@ create_app web --data domain=$APP_HOST --data memory=128M --data restore_from=@a
 check "data restored from web/" flash_has "Its data was restored from the newest backup in web/" /apps/web
 check "app DNS points at the new server" wait_for 30 dns_is "$APP_HOST" "$IP2"
 wait_for 30 test -f "$DATA_ROOT/certs/$APP_HOST/cert.pem"
-check "deploy succeeds" deploy_is succeeded web
+check "deploy succeeds" deploy_is succeeded web v1
 check "visits are back to the backup's value" test "$(visits)" = "$SAVED"
 
 say "Hardening: file descriptors and restart time with 6 apps"
@@ -160,7 +162,7 @@ check "apps may open 4096 files" grep -Eq '^Max open files +4096 +4096' "/proc/$
 for i in 1 2 3 4 5; do
   mkecho "echo$i"
   create_app "echo$i" >/dev/null
-  deploy_is succeeded "echo$i" >/dev/null || fail "deploy echo$i"
+  deploy_is succeeded "echo$i" v1 >/dev/null || fail "deploy echo$i"
 done
 PORTS="$(for i in 1 2 3 4 5; do port_of "echo$i"; done)"
 all_up() { for p in $PORTS; do curl -fsS -m 2 "http://127.0.0.1:$p/healthz" >/dev/null || return 1; done; site_up; }

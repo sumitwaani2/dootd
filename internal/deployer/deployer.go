@@ -362,6 +362,7 @@ func (d *Deployer) runJob(j job) {
 	}
 	lg.Close()
 	d.finish(j.id, err)
+	d.ForgetReleases(j.app) // the page shows fresh releases after a deploy
 	d.pruneBuildLogs(j.app)
 }
 

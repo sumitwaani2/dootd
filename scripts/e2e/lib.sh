@@ -5,7 +5,11 @@
 #   - e2etool cfmock: the Cloudflare API. Its /ips lists 198.18.0.0/15, and
 #     198.18.0.10 is added to lo, so requests to that address count as
 #     Cloudflare; requests to 127.0.0.1 reach the setup address.
-#   - DOOTD_TEST_* variables in a systemd drop-in point dootd at the fake
+#   - e2etool ghmock: the GitHub API, serving releases from $GHD. Releases
+#     of the sample apps are made by their own release workflows
+#     (scripts/release-workflow.py), so the path from workflow to deploy is
+#     tested end to end.
+#   - DOOTD_TEST_* variables in a systemd drop-in point dootd at the fakes
 #     (docs/architecture.md §18).
 #
 #   . "$(dirname "$0")/lib.sh"
@@ -19,8 +23,6 @@ BIN="/opt/dootd-e2e-bin"   # survives resets (rclone download)
 MOCK="$E2E/mock"
 OUT="$E2E/out"
 REL="$E2E/release"
-GIT="$E2E/git"
-WORKS="$E2E/work"
 CF_IP="198.18.0.10"
 PUB_IP="203.0.113.10"
 D="dootd.example.test"
@@ -30,7 +32,6 @@ TOKEN="e2e-cf-token-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 ARCH="$(dpkg --print-architecture)"
 DROPIN="/etc/systemd/system/dootd.service.d/test.conf"
 FAILS=0
-export GIT_AUTHOR_NAME=e2e GIT_AUTHOR_EMAIL=e2e@example.com GIT_COMMITTER_NAME=e2e GIT_COMMITTER_EMAIL=e2e@example.com
 
 say()  { printf '\n\033[1;34m== %s\033[0m\n' "$*"; }
 pass() { printf '  \033[32mPASS\033[0m %s\n' "$*"; }
@@ -84,40 +85,66 @@ db()      { python3 -c "import sqlite3,sys; c=sqlite3.connect('file:$DATA_ROOT/d
 
 # ------------------------------------------------------------ apps
 
-# mkrepo <name> <source dir>: a bare repo $GIT/<name>.git (the app will be
-# named <name>) with a work tree in $WORKS/<name>.
+# Apps come from GitHub releases. The fake GitHub API (e2etool ghmock)
+# serves $GHD/e2e/<repo>/<NNN>-<tag>/<assets>; a higher NNN is newer.
+GHD="$E2E/github"
+GH_TOKEN="e2e-gh-token-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+
+# mkrepo <name> [private]: an empty GitHub repository e2e/<name> (the app
+# will be named <name>).
 mkrepo() {
-  local name="$1" src="$2"
-  git init -q --bare -b main "$GIT/$name.git"
-  rm -rf "${WORKS:?}/$name" && cp -r "$src" "$WORKS/$name"
-  rm -rf "$WORKS/$name/build" "$WORKS/$name/zig-out" "$WORKS/$name/.zig-cache"
-  git -C "$WORKS/$name" init -q -b main
-  git -C "$WORKS/$name" remote add origin "file://$GIT/$name.git"
-  commit "$name" "initial $name"
+  mkdir -p "$GHD/e2e/$1"
+  if [ "${2:-}" = private ]; then touch "$GHD/e2e/$1/private"; fi
 }
-# commit <name> <message>: commit and push the current branch of $WORKS/<name>.
-commit() { git -C "$WORKS/$1" add -A && git -C "$WORKS/$1" commit -qm "$2" && git -C "$WORKS/$1" push -q origin HEAD; }
-set_title() { sed -i "s|<h1>[^<]*</h1>|<h1>$2</h1>|" "$WORKS/$1/src/main.c"; }
-# mkecho <name> [echo args]: a repo whose "build" copies the e2etool echo app.
-mkecho() {
-  local name="$1"; shift
-  local d="$E2E/src-$name"; mkdir -p "$d"
-  printf 'contract = 1\nzig_version = "0.16.0"\nbuild = "cp %s/e2etool echo-app"\nrun = "echo-app echo %s"\nhealth_path = "/healthz"\n' "$BIN" "$*" > "$d/dootd.toml"
-  mkrepo "$name" "$d"
+# publish <repo> <tag> <dir> [name]: a GitHub release with the files in <dir>.
+publish() {
+  local d="$GHD/e2e/$1" n
+  n=$(( $(find "$d" -mindepth 1 -maxdepth 1 -type d | wc -l) + 1 ))
+  local r="$d/$(printf '%03d' "$n")-$2"
+  mkdir -p "$r"
+  cp -r "$3"/. "$r/"
+  if [ -n "${4:-}" ]; then printf '%s\n' "$4" > "$r/name"; fi
+  RELDIR="$r"
 }
-# create_app <repo name> [--data ...]: Add app from the local repo; prints "code location".
+# sample_dist <sample-c|sample-zig>: run the sample's own release workflow
+# (tests, both architectures, package, smoke test) once; prints the dir.
+sample_dist() {
+  local out="$E2E/dist-$1"
+  if [ ! -f "$out/checksums.txt" ]; then
+    mkdir -p "$BIN/runner"
+    RUNNER_TEMP="$BIN/runner" python3 scripts/release-workflow.py "examples/$1" --publish-to "$out" >&2 || return 1
+  fi
+  echo "$out"
+}
+# echo_dist <dir> [echo args]: release files for the e2etool echo app.
+echo_dist() {
+  local d="$1"; shift
+  mkdir -p "$d"
+  for arch in amd64 arm64; do
+    local p; p="$(mktemp -d)"; chmod 755 "$p"
+    printf 'contract = 2\nrun = "echo-app echo %s"\nhealth_path = "/healthz"\n' "$*" > "$p/dootd.toml"
+    install -m 0755 "$BIN/echo-$arch" "$p/echo-app"
+    tar -czf "$d/app-linux-$arch.tar.gz" -C "$p" .
+    rm -rf "$p"
+  done
+  (cd "$d" && sha256sum app-linux-*.tar.gz > checksums.txt)
+}
+# resum <dir>: rewrite checksums.txt after changing a tarball.
+resum() { (cd "$1" && sha256sum app-linux-*.tar.gz > checksums.txt); }
+# mkecho <name> [echo args]: repo e2e/<name> with release v1 of the echo app.
+mkecho() { local n="$1"; shift; mkrepo "$n"; echo_dist "$E2E/echo-$n" "$@"; publish "$n" v1 "$E2E/echo-$n"; }
+# create_app <repo name> [--data ...]: Add app; prints "code location".
 create_app() {
   local name="$1"; shift
-  post /apps --data type=c --data-urlencode "repo=file://$GIT/$name.git" --data branch=main "$@"
+  post /apps --data-urlencode "repo=https://github.com/e2e/$name" "$@"
 }
-# deploy <app> [rollback release]: start a deployment and follow its live log
-# into $LAST; sets DEP and STATUS (the final status, or "refused").
-# Not meant for $(...): the variables must reach the caller.
+# deploy <app> <tag> / rollback <app> <kept release>: start a deployment and
+# follow its live log into $LAST; sets DEP and STATUS (the final status, or
+# "refused"). Not meant for $(...): the variables must reach the caller.
 N=0
-deploy() {
-  local app="$1" loc
+_follow() {
+  local loc="$1"
   N=$((N + 1)); LAST="$OUT/deploy-$N.txt"; DEP=""; STATUS=""
-  if [ -n "${2:-}" ]; then loc="$(post "/apps/$app/rollback" --data "release=$2")"; else loc="$(post "/apps/$app/deploy")"; fi
   case "$loc" in
     *"/deployments/"*) DEP="${loc##*/deployments/}" ;;
     *) STATUS="refused"; : > "$LAST"; return 0 ;;
@@ -125,8 +152,12 @@ deploy() {
   dc -N --max-time 900 "$DASH/deployments/$DEP/stream" > "$LAST" || true
   STATUS="$(grep -A1 '^event: done' "$LAST" | tail -n1 | sed 's/^data: //')"
 }
-deploy_is() { local want="$1"; shift; deploy "$@"; [ "$STATUS" = "$want" ] || { echo "   deploy $*: $STATUS"; tail -n 30 "$LAST" | sed 's/^/   | /'; return 1; }; }
-refused()   { deploy "$@"; [ "$STATUS" = refused ]; }
+deploy()   { _follow "$(post "/apps/$1/deploy" --data-urlencode "tag=$2")"; }
+rollback() { _follow "$(post "/apps/$1/rollback" --data-urlencode "release=$2")"; }
+_is() { local want="$1"; shift; "$@"; [ "$STATUS" = "$want" ] || { echo "   $*: $STATUS"; tail -n 30 "$LAST" | sed 's/^/   | /'; return 1; }; }
+deploy_is()   { local want="$1"; shift; _is "$want" deploy "$@"; }
+rollback_is() { local want="$1"; shift; _is "$want" rollback "$@"; }
+refused()     { deploy "$@"; [ "$STATUS" = refused ]; }
 last_has() { grep -qF -- "$1" "$LAST"; }
 # port_of <app>: the app's local port (shown on its page).
 port_of() { get "/apps/$1" | grep -oE 'port [0-9]+' | head -n1 | awk '{print $2}'; }
@@ -139,23 +170,28 @@ e2e_prepare() {
   [ "$(id -u)" -eq 0 ] || { echo "run as root"; exit 1; }
   echo "kernel $(uname -r), $(. /etc/os-release && echo "$PRETTY_NAME"), $(nproc) CPUs"
   say "Build dootd, a local release and the e2e tool"
-  for u in "$UNIT" cfmock s3mock relsrv; do systemctl stop "$u" 2>/dev/null || true; done
+  for u in "$UNIT" cfmock ghmock s3mock relsrv; do systemctl stop "$u" 2>/dev/null || true; done
   for u in $(getent passwd | cut -d: -f1 | grep '^dootd-' || true); do userdel "$u" 2>/dev/null || true; done
   rm -rf "$E2E" "$DATA_ROOT" /etc/dootd /etc/systemd/system/dootd.service /etc/systemd/system/dootd.service.d /usr/local/bin/dootd
   systemctl daemon-reload
-  mkdir -p "$MOCK" "$OUT" "$REL" "$GIT" "$WORKS" "$BIN"
+  mkdir -p "$MOCK" "$OUT" "$REL" "$GHD" "$BIN"
   chmod 0755 "$E2E" "$BIN"
   make build
   install -m 0755 dist/dootd "$REL/dootd-linux-$ARCH"
   (cd "$REL" && sha256sum "dootd-linux-$ARCH" > checksums.txt)
   go build -o "$BIN/e2etool" ./scripts/e2e/e2etool
+  CGO_ENABLED=0 GOARCH=amd64 go build -o "$BIN/echo-amd64" ./scripts/e2e/e2etool
+  CGO_ENABLED=0 GOARCH=arm64 go build -o "$BIN/echo-arm64" ./scripts/e2e/e2etool
   chmod 0755 "$BIN/e2etool"
+  python3 -c 'import yaml' 2>/dev/null || apt-get install -y -qq python3-yaml >/dev/null
+  systemd-run --unit=ghmock --collect -q "$BIN/e2etool" ghmock -listen 127.0.0.1:8902 -dir "$GHD" -token "$GH_TOKEN"
   ip addr add "$CF_IP/32" dev lo 2>/dev/null || true
   systemd-run --unit=relsrv --collect -q python3 -m http.server 8900 --bind 127.0.0.1 --directory "$REL"
   systemd-run --unit=cfmock --collect -q "$BIN/e2etool" cfmock -listen 127.0.0.1:8787 -dir "$MOCK" \
     -token "$TOKEN" -extra-range 198.18.0.0/15 "${@:--zones=example.test}"
   wait_for 10 curl -fsS http://127.0.0.1:8787/_mock/state
   wait_for 10 curl -fsS http://127.0.0.1:8900/checksums.txt
+  wait_for 10 curl -fsS -o /dev/null http://127.0.0.1:8902/user/repos
   test_env
 }
 
@@ -165,6 +201,7 @@ test_env() {
   {
     echo "[Service]"
     echo "Environment=DOOTD_TEST_CLOUDFLARE_API=http://127.0.0.1:8787/client/v4"
+    echo "Environment=DOOTD_TEST_GITHUB_API=http://127.0.0.1:8902"
     echo "Environment=DOOTD_TEST_PUBLIC_IPV4=$PUB_IP"
     echo "Environment=DOOTD_TEST_PUBLIC_IPV6=off"
     for kv in "$@"; do echo "Environment=DOOTD_TEST_$kv"; done
@@ -208,6 +245,7 @@ e2e_result() {
   if [ "$FAILS" -gt 0 ]; then
     echo "---- journal ----"; journalctl -u "$UNIT" --no-pager -n 200 || true
     echo "---- cfmock ----"; journalctl -u cfmock --no-pager -n 20 || true
+    echo "---- ghmock ----"; journalctl -u ghmock --no-pager -n 20 || true
     echo "$FAILS check(s) failed"; exit 1
   fi
   echo "all checks passed"

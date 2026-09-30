@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Phase 1 end-to-end check on a real Ubuntu 24.04 host (GitHub Actions runner
 # or a test VPS). Must run as root. Installs dootd with install.sh, sets it
-# up in the dashboard, deploys both sample apps from local git repos and
-# verifies: per-app users, cgroup placement + limits, clean env, DATA_DIR
+# up in the dashboard, deploys both sample apps from GitHub releases made by
+# their own release workflows (fake GitHub API) and verifies: per-app users, cgroup placement + limits, clean env, DATA_DIR
 # ownership, health checks, OOM detection + restart, crash backoff ->
 # crashed, graceful stop with no leftover processes, data persisting across
 # restarts.
@@ -27,18 +27,21 @@ down() { ! healthy "$1"; }
 e2e_prepare
 e2e_setup
 
+say "Release both sample apps with their own workflows (tests, amd64 + arm64)"
+for a in sample-zig sample-c; do
+  check "$a release workflow" sample_dist "$a"
+  mkrepo "$a"
+  publish "$a" v1 "$E2E/dist-$a"
+done
+
 say "Add and deploy both sample apps"
-mkrepo sample-zig examples/sample-zig
-mkrepo sample-c examples/sample-c
-# Compiling the sqlite amalgamation with ReleaseSafe needs more than the
-# default 1G build memory (builds get no swap).
-check "sample-zig created" post_is "303 $DASH/apps/sample-zig" /apps --data type=zig --data-urlencode "repo=file://$GIT/sample-zig.git" \
-  --data branch=main --data memory=64M --data build_memory=2G
-check "sample-c created" post_is "303 $DASH/apps/sample-c" /apps --data type=c --data-urlencode "repo=file://$GIT/sample-c.git" \
-  --data branch=main --data memory=64M --data cpu=0.5
+check "sample-zig created" post_is "303 $DASH/apps/sample-zig" /apps --data-urlencode "repo=https://github.com/e2e/sample-zig" --data memory=64M
+check "sample-c created" post_is "303 $DASH/apps/sample-c" /apps --data-urlencode "repo=https://github.com/e2e/sample-c" --data memory=64M --data cpu=0.5
 post /apps/sample-c/env --data key=GREETING --data value=hello >/dev/null
-check "deploy sample-zig" deploy_is succeeded sample-zig
-check "deploy sample-c" deploy_is succeeded sample-c
+check "deploy menu offers v1" page_has /apps/sample-c '<option value="v1" selected>'
+check "deploy sample-zig v1" deploy_is succeeded sample-zig v1
+check "deploy sample-c v1" deploy_is succeeded sample-c v1
+check "nothing was built on the server" bash -c "[ ! -e $DATA_ROOT/toolchains ] && [ ! -e $DATA_ROOT/builds ] && [ ! -e $DATA_ROOT/cache ]"
 PZ="$(port_of sample-zig)"; PC="$(port_of sample-c)"
 echo "  ports: sample-zig $PZ, sample-c $PC"
 
@@ -61,7 +64,8 @@ for a in sample-zig sample-c; do
   check "$a env DATA_DIR" env_has "$pid" "DATA_DIR=$DATA_ROOT/apps/$a/data"
   check "$a env HOST" env_has "$pid" "HOST=127.0.0.1"
   check "$a env DOOTD_APP (from the repo name)" env_has "$pid" "DOOTD_APP=$a"
-  check "$a env DOOTD_CONTRACT" env_has "$pid" "DOOTD_CONTRACT=1"
+  check "$a env DOOTD_CONTRACT" env_has "$pid" "DOOTD_CONTRACT=2"
+  check "$a env DOOTD_RELEASE" env_has "$pid" "DOOTD_RELEASE=v1"
   check "$a env does not inherit dootd's env" env_lacks "$pid" '^(INVOCATION_ID|JOURNAL_STREAM|DOOTD_TEST_)'
 done
 check "sample-c cpu.max = 0.5 core" [ "$(cg sample-c cpu.max)" = "50000 100000" ]
