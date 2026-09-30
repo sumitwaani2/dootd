@@ -287,8 +287,10 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, name
 
 func (s *Server) parseTemplates() error {
 	funcs := template.FuncMap{
-		"ago":      ago,
-		"datetime": func(t time.Time) string { return fmtTime(t, time.DateTime) },
+		"ago": ago,
+		// Clock times name the server's timezone (e.g. "IST", "UTC"), which
+		// need not be the viewer's.
+		"datetime": func(t time.Time) string { return fmtTime(t, time.DateTime+" MST") },
 		"date":     func(t time.Time) string { return fmtTime(t, time.DateOnly) },
 		"bytes":    humanBytes,
 		"short": func(s string) string {
