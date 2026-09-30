@@ -5,7 +5,6 @@ package app
 import (
 	"errors"
 	"fmt"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -70,6 +69,17 @@ func ValidateName(name string) error {
 		return fmt.Errorf("invalid app name %q: use 2-24 characters of a-z, 0-9 and '-', starting with a letter and not ending with '-'", name)
 	}
 	return nil
+}
+
+// NameFromRepo derives the app name from a repository name (Req 8.2):
+// lowercased, with '_' and '.' turned into '-'. The result must still pass
+// ValidateName.
+func NameFromRepo(repo string) (string, error) {
+	n := strings.NewReplacer("_", "-", ".", "-").Replace(strings.ToLower(repo))
+	if err := ValidateName(n); err != nil {
+		return "", fmt.Errorf("the repository name %q cannot be used as an app name (%q): app names are 2-24 characters of a-z, 0-9 and '-', starting with a letter and not ending with '-'", repo, n)
+	}
+	return n, nil
 }
 
 // ValidateEnvName checks a user-supplied env var name.
@@ -204,20 +214,4 @@ func SplitCommand(s string) ([]string, error) {
 		return nil, errors.New("command is empty")
 	}
 	return args, nil
-}
-
-// CleanSubdir normalizes an app path inside a repository ("" = repo root).
-func CleanSubdir(p string) (string, error) {
-	p = strings.Trim(strings.TrimSpace(p), "/")
-	if p == "" {
-		return "", nil
-	}
-	c := filepath.Clean(p)
-	if c == ".." || strings.HasPrefix(c, "../") || c == ".git" || strings.HasPrefix(c, ".git/") {
-		return "", fmt.Errorf("%q must be a directory inside the repository", p)
-	}
-	if c == "." {
-		return "", nil
-	}
-	return c, nil
 }

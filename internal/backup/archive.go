@@ -197,39 +197,3 @@ func safeRel(p string) error {
 	}
 	return nil
 }
-
-// compressFile zstd-compresses src into dst and returns dst's SHA-256 and size.
-func compressFile(src, dst string) (string, int64, error) {
-	in, err := os.Open(src)
-	if err != nil {
-		return "", 0, err
-	}
-	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return "", 0, err
-	}
-	h := sha256.New()
-	zw, err := zstd.NewWriter(io.MultiWriter(out, h), zstd.WithEncoderConcurrency(1))
-	if err == nil {
-		_, err = io.Copy(zw, in)
-		if cerr := zw.Close(); err == nil {
-			err = cerr
-		}
-	}
-	if err == nil {
-		err = out.Sync()
-	}
-	st, serr := out.Stat()
-	if cerr := out.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = serr
-	}
-	if err != nil {
-		os.Remove(dst)
-		return "", 0, err
-	}
-	return hex.EncodeToString(h.Sum(nil)), st.Size(), nil
-}

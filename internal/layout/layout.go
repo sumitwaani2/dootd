@@ -11,9 +11,37 @@ import (
 	"github.com/sumitwaani2/dootd/internal/users"
 )
 
-// Layout resolves paths under the data root (default /var/lib/dootd).
+// Fixed locations. dootd has no config file (docs/architecture.md §6).
+const (
+	DataRoot  = "/var/lib/dootd"
+	ConfigDir = "/etc/dootd"
+	MasterKey = "/etc/dootd/master.key"
+)
+
+// Layout resolves paths under the data root (DataRoot).
 type Layout struct {
 	Root string
+}
+
+// Default is the layout under DataRoot.
+func Default() Layout { return Layout{Root: DataRoot} }
+
+// DBPath is dootd.db.
+func (l Layout) DBPath() string { return filepath.Join(l.Root, "dootd.db") }
+
+// SetupDir holds the self-signed certificate of the setup address.
+func (l Layout) SetupDir() string { return filepath.Join(l.Root, "setup") }
+
+// EnsureBase creates /etc/dootd (0700) and the data root (0711: app users
+// can traverse to their own directories without listing anything).
+func EnsureBase(l Layout) error {
+	if err := os.MkdirAll(ConfigDir, 0o700); err != nil {
+		return fmt.Errorf("layout: create %s: %w", ConfigDir, err)
+	}
+	if err := os.MkdirAll(l.Root, 0o711); err != nil {
+		return fmt.Errorf("layout: create %s: %w", l.Root, err)
+	}
+	return os.Chmod(l.Root, 0o711)
 }
 
 // AppsDir is <root>/apps.

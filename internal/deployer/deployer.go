@@ -50,7 +50,6 @@ type AppConfig struct {
 	Base         app.Spec // name, type, domain, port, env, limits (no release fields)
 	Repo         github.Repo
 	Branch       string
-	Subdir       string
 	BuildMemory  int64
 	BuildTimeout time.Duration
 }
@@ -150,7 +149,7 @@ func (d *Deployer) Register(ctx context.Context, cfg AppConfig) (*supervisor.App
 func (d *Deployer) specFor(cfg AppConfig, r Release) app.Spec {
 	s := cfg.Base
 	s.ReleaseID = r.ID
-	s.ReleaseDir = filepath.Join(d.Layout.ReleaseDir(s.Name, r.ID), r.Subdir)
+	s.ReleaseDir = d.Layout.ReleaseDir(s.Name, r.ID)
 	s.Run = r.Run
 	s.HealthPath = r.HealthPath
 	return s
@@ -356,7 +355,7 @@ func (d *Deployer) deploy(ctx context.Context, cfg AppConfig, j job, lg *logs.Lo
 	lg.Writef("commit %s %q -> release %s", co.SHA[:12], co.Subject, releaseID)
 
 	// 2. dootd.toml.
-	appRoot := filepath.Join(ws, cfg.Subdir)
+	appRoot := ws
 	m, err := manifest.Load(appRoot, cfg.Base.Type)
 	if err != nil {
 		return err
@@ -371,7 +370,7 @@ func (d *Deployer) deploy(ctx context.Context, cfg AppConfig, j job, lg *logs.Lo
 
 	// 4. Build as the app user in its build cgroup.
 	err = d.Builder.Run(ctx, builder.Job{
-		App: name, User: u, Workspace: ws, Subdir: cfg.Subdir, Command: m.Build, ZigDir: zigDir,
+		App: name, User: u, Workspace: ws, Command: m.Build, ZigDir: zigDir,
 		Env: cfg.Base.Env, MemoryMax: cfg.BuildMemory, Timeout: cfg.BuildTimeout, Log: lg,
 	})
 	if err != nil {
@@ -393,7 +392,7 @@ func (d *Deployer) deploy(ctx context.Context, cfg AppConfig, j job, lg *logs.Lo
 		return err
 	}
 	rel := Release{
-		App: name, ID: releaseID, GitSHA: co.SHA, Subject: co.Subject, Branch: cfg.Branch, Subdir: cfg.Subdir,
+		App: name, ID: releaseID, GitSHA: co.SHA, Subject: co.Subject, Branch: cfg.Branch,
 		ZigVersion: m.ZigVersion, Run: m.Run, HealthPath: m.HealthPath, CreatedAt: time.Now(),
 	}
 	if err := d.insertRelease(ctx, rel); err != nil {

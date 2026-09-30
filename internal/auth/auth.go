@@ -37,7 +37,7 @@ var (
 	ErrInvalidLogin = errors.New("wrong email or password")
 	ErrRateLimited  = errors.New("too many failed sign-in attempts; try again in 15 minutes")
 	ErrNoSession    = errors.New("not signed in")
-	ErrNoAdmin      = errors.New("no admin account yet; create it over SSH with: sudo dootd ctl admin set-password --email you@example.com")
+	ErrNoAdmin      = errors.New("no admin account yet: sign in with the one-time password printed by the install command (leave the email empty)")
 )
 
 // Session is an authenticated dashboard session.
@@ -49,6 +49,7 @@ type Session struct {
 	IP        string
 	UserAgent string
 	Current   bool
+	Setup     bool // signed in with the one-time password: may only set up the account
 }
 
 // ID is a short, non-secret identifier for display and revocation.
@@ -62,6 +63,8 @@ type Auth struct {
 	failures map[string][]time.Time
 	overall  []time.Time
 	lastFail time.Time
+
+	setup setupState
 }
 
 // New returns an Auth backed by db.
@@ -152,17 +155,21 @@ func (a *Auth) Login(ctx context.Context, email, password, ip, userAgent string)
 	a.mu.Lock()
 	delete(a.failures, ip)
 	a.mu.Unlock()
-	return a.newSession(ctx, ip, userAgent)
+	return a.newSession(ctx, ip, userAgent, false)
 }
 
-func (a *Auth) newSession(ctx context.Context, ip, userAgent string) (string, error) {
+func (a *Auth) newSession(ctx context.Context, ip, userAgent string, setup bool) (string, error) {
 	tok := randToken()
 	now := time.Now().Unix()
 	if len(userAgent) > 200 {
 		userAgent = userAgent[:200]
 	}
-	_, err := a.db.Writer().ExecContext(ctx, `INSERT INTO sessions (id_hash, csrf, created_at, last_seen, ip, user_agent)
-		VALUES (?, ?, ?, ?, ?, ?)`, hashToken(tok), randToken(), now, now, ip, userAgent)
+	flag := 0
+	if setup {
+		flag = 1
+	}
+	_, err := a.db.Writer().ExecContext(ctx, `INSERT INTO sessions (id_hash, csrf, created_at, last_seen, ip, user_agent, setup)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`, hashToken(tok), randToken(), now, now, ip, userAgent, flag)
 	if err != nil {
 		return "", err
 	}
@@ -182,9 +189,9 @@ func (a *Auth) Session(ctx context.Context, tok string) (*Session, error) {
 		return nil, ErrNoSession
 	}
 	s := &Session{idHash: hashToken(tok), Current: true}
-	var created, seen int64
-	err := a.db.Reader().QueryRowContext(ctx, `SELECT csrf, created_at, last_seen, ip, user_agent FROM sessions WHERE id_hash = ?`,
-		s.idHash).Scan(&s.CSRF, &created, &seen, &s.IP, &s.UserAgent)
+	var created, seen, setup int64
+	err := a.db.Reader().QueryRowContext(ctx, `SELECT csrf, created_at, last_seen, ip, user_agent, setup FROM sessions WHERE id_hash = ?`,
+		s.idHash).Scan(&s.CSRF, &created, &seen, &s.IP, &s.UserAgent, &setup)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNoSession
 	}
@@ -193,7 +200,9 @@ func (a *Auth) Session(ctx context.Context, tok string) (*Session, error) {
 	}
 	s.CreatedAt, s.LastSeen = time.Unix(created, 0), time.Unix(seen, 0)
 	now := time.Now()
-	if now.Sub(s.LastSeen) > IdleTimeout || now.Sub(s.CreatedAt) > AbsoluteTimeout {
+	s.Setup = setup == 1
+	// A setup session ends with its one-time password.
+	if now.Sub(s.LastSeen) > IdleTimeout || now.Sub(s.CreatedAt) > AbsoluteTimeout || (s.Setup && a.SetupUntil().IsZero()) {
 		a.db.Writer().ExecContext(ctx, `DELETE FROM sessions WHERE id_hash = ?`, s.idHash)
 		return nil, ErrNoSession
 	}
@@ -266,6 +275,27 @@ func (a *Auth) ChangePassword(ctx context.Context, cur *Session, oldPw, newPw, i
 		return err
 	}
 	_, err = a.RevokeOthers(ctx, cur)
+	return err
+}
+
+// ChangeEmail verifies the current password and sets a new admin email.
+func (a *Auth) ChangeEmail(ctx context.Context, password, email, ip string) error {
+	email, err := NormalizeEmail(email)
+	if err != nil {
+		return err
+	}
+	if err := a.allow(ip); err != nil {
+		return err
+	}
+	var hash string
+	if err := a.db.Reader().QueryRowContext(ctx, `SELECT password_hash FROM users WHERE id = 1`).Scan(&hash); err != nil {
+		return err
+	}
+	if !VerifyPassword(password, hash) {
+		a.fail(ip)
+		return errors.New("current password is wrong")
+	}
+	_, err = a.db.Writer().ExecContext(ctx, `UPDATE users SET email = ?, updated_at = ? WHERE id = 1`, email, time.Now().Unix())
 	return err
 }
 

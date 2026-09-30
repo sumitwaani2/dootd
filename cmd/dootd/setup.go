@@ -1,74 +1,60 @@
 package main
 
 import (
-	"bufio"
+	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
-
-	"golang.org/x/sys/unix"
-	"golang.org/x/term"
+	"time"
 
 	"github.com/sumitwaani2/dootd/contrib/systemd"
-	"github.com/sumitwaani2/dootd/internal/config"
+	"github.com/sumitwaani2/dootd/internal/auth"
+	"github.com/sumitwaani2/dootd/internal/buildinfo"
+	"github.com/sumitwaani2/dootd/internal/edge"
+	"github.com/sumitwaani2/dootd/internal/layout"
 	"github.com/sumitwaani2/dootd/internal/secrets"
-	"github.com/sumitwaani2/dootd/internal/selfupdate"
+	"github.com/sumitwaani2/dootd/internal/store"
+	"github.com/sumitwaani2/dootd/internal/testenv"
 )
 
-// runSetupHost prepares the host after the binary is installed (called by
-// install.sh): directories, master key and the systemd unit (enabled, not
-// started; `dootd init` starts it). It is safe to run again.
-func runSetupHost(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("setup-host", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	cfgPath := fs.String("config", config.DefaultPath, "path to config.toml")
-	noSystemd := fs.Bool("no-systemd", false, "do not install or enable the systemd unit")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if err := setupHost(*cfgPath, !*noSystemd, stdout); err != nil {
+// runSetupHost is the second half of install.sh (docs/architecture.md §8):
+// directories, master key, systemd unit, a new one-time password, start
+// dootd, print how to sign in. install.sh stops dootd before it replaces
+// the binary; running this again is safe.
+func runSetupHost(stdout, stderr io.Writer) int {
+	if err := setupHost(stdout); err != nil {
 		fmt.Fprintln(stderr, "dootd setup-host:", err)
 		return 1
 	}
 	return 0
 }
 
-func setupHost(cfgPath string, withSystemd bool, out io.Writer) error {
+func setupHost(out io.Writer) error {
 	if os.Geteuid() != 0 {
 		return errors.New("must run as root")
 	}
-	cfg, err := config.Load(cfgPath, false)
-	if err != nil {
+	if serviceActive() {
+		return errors.New("dootd is running; stop it first (systemctl stop dootd)")
+	}
+	lay := layout.Default()
+	if err := layout.EnsureBase(lay); err != nil {
 		return err
 	}
-	if err := cfg.EnsureDirs(); err != nil {
+	if _, err := secrets.LoadOrCreate(layout.MasterKey); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "directories: %s (0700), %s (0711)\n", dirOf(cfg.MasterKey), cfg.DataRoot)
-	_, statErr := os.Stat(cfg.MasterKey)
-	if _, err := secrets.LoadOrCreate(cfg.MasterKey); err != nil {
-		return err
-	}
-	if statErr == nil {
-		fmt.Fprintf(out, "master key: kept the existing %s\n", cfg.MasterKey)
-	} else {
-		fmt.Fprintf(out, "master key: created %s (0600). Download the recovery kit from the dashboard later.\n", cfg.MasterKey)
-	}
-	if !withSystemd {
-		return nil
-	}
-	changed, err := installUnit()
-	if err != nil {
-		return err
-	}
-	if changed {
-		fmt.Fprintf(out, "systemd unit: installed %s\n", systemd.UnitPath)
-	} else {
-		fmt.Fprintf(out, "systemd unit: %s is up to date\n", systemd.UnitPath)
+	if cur, err := os.ReadFile(systemd.UnitPath); err != nil || string(cur) != systemd.Unit {
+		tmp := systemd.UnitPath + ".tmp"
+		if err := os.WriteFile(tmp, []byte(systemd.Unit), 0o644); err != nil {
+			return err
+		}
+		if err := os.Rename(tmp, systemd.UnitPath); err != nil {
+			return err
+		}
 	}
 	if err := systemctl("daemon-reload"); err != nil {
 		return err
@@ -76,20 +62,69 @@ func setupHost(cfgPath string, withSystemd bool, out io.Writer) error {
 	if err := systemctl("enable", "--quiet", "dootd"); err != nil {
 		return err
 	}
-	fmt.Fprintln(out, "systemd unit: enabled (starts at boot; `dootd init` starts it now)")
+
+	// The one-time password is written while dootd is stopped (it caches
+	// the state in memory).
+	ctx := context.Background()
+	st, err := store.Open(ctx, lay.DBPath())
+	if err != nil {
+		return err
+	}
+	pw, until, err := auth.NewSetupPassword(ctx, st)
+	var domain string
+	if v, ok, _ := st.GetSetting(ctx, edge.SettingDashboardDomain); ok {
+		domain = string(v)
+	}
+	st.Close()
+	if err != nil {
+		return err
+	}
+	if err := os.Chmod(lay.DBPath(), 0o600); err != nil {
+		return err
+	}
+
+	if err := systemctl("start", "dootd"); err != nil {
+		return err
+	}
+	ready := waitListening("127.0.0.1:443", 30*time.Second)
+
+	ip := testenv.PublicIPv4()
+	if ip == "" {
+		dctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		ip, _ = edge.DetectIP(dctx, "tcp4")
+		cancel()
+	}
+	if ip == "" {
+		ip = "<this server's IP address>"
+	}
+
+	fmt.Fprintf(out, "\ndootd %s is running.\n\n", buildinfo.Version)
+	if !ready {
+		fmt.Fprintln(out, "  Warning: dootd is not answering on port 443 yet; see: journalctl -u dootd")
+		fmt.Fprintln(out)
+	}
+	fmt.Fprintf(out, "  Open:              https://%s\n", ip)
+	fmt.Fprintf(out, "                     Your browser warns that the certificate is not trusted: expected here, continue.\n")
+	fmt.Fprintf(out, "  One-time password: %s\n", pw)
+	fmt.Fprintf(out, "                     Leave the email empty. Works once, until %s.\n", until.UTC().Format("2006-01-02 15:04 UTC"))
+	if domain != "" {
+		fmt.Fprintf(out, "\n  Dashboard:         https://%s\n", domain)
+		fmt.Fprintf(out, "                     Sign in there as usual; the address above is only needed if that fails.\n")
+	}
+	fmt.Fprintln(out)
 	return nil
 }
 
-// installUnit writes the embedded unit if the installed one differs.
-func installUnit() (bool, error) {
-	if cur, err := os.ReadFile(systemd.UnitPath); err == nil && string(cur) == systemd.Unit {
-		return false, nil
+func waitListening(addr string, max time.Duration) bool {
+	deadline := time.Now().Add(max)
+	for time.Now().Before(deadline) {
+		if c, err := net.DialTimeout("tcp", addr, time.Second); err == nil {
+			c.Close()
+			return true
+		}
+		time.Sleep(300 * time.Millisecond)
 	}
-	tmp := systemd.UnitPath + ".tmp"
-	if err := os.WriteFile(tmp, []byte(systemd.Unit), 0o644); err != nil {
-		return false, err
-	}
-	return true, os.Rename(tmp, systemd.UnitPath)
+	return false
 }
 
 func systemctl(args ...string) error {
@@ -102,131 +137,4 @@ func systemctl(args ...string) error {
 
 func serviceActive() bool {
 	return exec.Command("systemctl", "is-active", "--quiet", "dootd").Run() == nil
-}
-
-func dirOf(p string) string {
-	if i := strings.LastIndexByte(p, '/'); i > 0 {
-		return p[:i]
-	}
-	return "/"
-}
-
-// prompter asks questions on the terminal. Without a terminal (automation)
-// every answer must come from flags or environment variables.
-type prompter struct {
-	in  *bufio.Reader
-	out io.Writer
-	tty bool
-	fd  int
-}
-
-func newPrompter(out io.Writer) *prompter {
-	fd := int(os.Stdin.Fd())
-	p := &prompter{in: bufio.NewReader(os.Stdin), out: out, tty: term.IsTerminal(fd), fd: fd}
-	if !p.tty {
-		// `curl ... | sudo bash` style: stdin is the script, but a
-		// terminal may still be attached.
-		if f, err := os.Open("/dev/tty"); err == nil {
-			if term.IsTerminal(int(f.Fd())) {
-				p.in, p.tty, p.fd = bufio.NewReader(f), true, int(f.Fd())
-			} else {
-				f.Close()
-			}
-		}
-	}
-	return p
-}
-
-var errNoTTY = errors.New("no terminal to ask on")
-
-// ask returns def when given, or the typed answer (def on empty input).
-func (p *prompter) ask(question, def string) (string, error) {
-	if !p.tty {
-		if def != "" {
-			return def, nil
-		}
-		return "", fmt.Errorf("%w: %s", errNoTTY, question)
-	}
-	if def != "" {
-		fmt.Fprintf(p.out, "%s [%s]: ", question, def)
-	} else {
-		fmt.Fprintf(p.out, "%s: ", question)
-	}
-	line, err := p.in.ReadString('\n')
-	if err != nil && line == "" {
-		return "", err
-	}
-	if line = strings.TrimSpace(line); line == "" {
-		return def, nil
-	}
-	return line, nil
-}
-
-// secret reads a hidden value. It reads through the same buffered reader
-// as ask (answers typed ahead are not lost) with echo switched off first.
-func (p *prompter) secret(question string) (string, error) {
-	if !p.tty {
-		return "", fmt.Errorf("%w: %s", errNoTTY, question)
-	}
-	if t, err := unix.IoctlGetTermios(p.fd, unix.TCGETS); err == nil {
-		quiet := *t
-		quiet.Lflag &^= unix.ECHO
-		quiet.Lflag |= unix.ICANON | unix.ISIG
-		if unix.IoctlSetTermios(p.fd, unix.TCSETS, &quiet) == nil {
-			defer unix.IoctlSetTermios(p.fd, unix.TCSETS, t)
-		}
-	}
-	fmt.Fprintf(p.out, "%s: ", question)
-	line, err := p.in.ReadString('\n')
-	fmt.Fprintln(p.out)
-	if err != nil && line == "" {
-		return "", err
-	}
-	return strings.TrimSpace(line), nil
-}
-
-// yes asks a yes/no question; without a terminal it returns def.
-func (p *prompter) yes(question string, def bool) bool {
-	if !p.tty {
-		return def
-	}
-	hint := "y/N"
-	if def {
-		hint = "Y/n"
-	}
-	fmt.Fprintf(p.out, "%s [%s]: ", question, hint)
-	line, _ := p.in.ReadString('\n')
-	switch strings.ToLower(strings.TrimSpace(line)) {
-	case "y", "yes":
-		return true
-	case "n", "no":
-		return false
-	}
-	return def
-}
-
-// runUpdateGuard is run by systemd before every start, from dootd.prev
-// (see contrib/systemd/dootd.service and selfupdate.Guard).
-func runUpdateGuard(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("update-guard", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	cfgPath := fs.String("config", config.DefaultPath, "path to config.toml")
-	binary := fs.String("binary", "/usr/local/bin/dootd", "the binary systemd starts")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	cfg, err := config.Load(*cfgPath, false)
-	if err != nil {
-		fmt.Fprintln(stderr, "dootd update-guard:", err)
-		return 1
-	}
-	msg, err := selfupdate.Guard(*binary, cfg.DataRoot)
-	if err != nil {
-		fmt.Fprintln(stderr, "dootd update-guard:", err)
-		return 1
-	}
-	if msg != "" {
-		fmt.Fprintln(stdout, "dootd update-guard:", msg)
-	}
-	return 0
 }

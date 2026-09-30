@@ -2,7 +2,7 @@
 
 A tiny, self-contained PaaS for hosting small server-rendered **Zig / C + SQLite** web apps on a single VPS.
 
-One binary. No Docker, no Kubernetes, no Traefik, no extra reverse proxy. SSH in once to install, then do everything from a web dashboard.
+One binary. No Docker, no Kubernetes, no Traefik, no extra reverse proxy. SSH in once and run one command; it prints a one-time password, and everything else happens in a web dashboard. One way to do each thing: no admin CLI, no config file.
 
 ```
 Cloudflare (proxied, Full strict) ──HTTPS──► dootd (TLS + routing + dashboard + builds + backups) ──► your apps on 127.0.0.1
@@ -14,10 +14,9 @@ Cloudflare (proxied, Full strict) ──HTTPS──► dootd (TLS + routing + da
 - **Routing and TLS built in.** Requests are routed by Host header. dootd issues Cloudflare Origin CA certificates for Full (strict) mode.
 - **Only Cloudflare can reach your apps.** dootd checks that traffic comes from Cloudflare IPs and verifies Authenticated Origin Pulls with its own CA.
 - **Light isolation.** Each app runs as its own Linux user, with cgroup v2 limits on memory, CPU and process count.
-- **SQLite backups to R2 or any S3-compatible storage.** Every 3 hours and before every deploy, kept for 48 hours, with one-click restore.
+- **SQLite backups to R2 or any S3-compatible storage.** Every 3 hours and before every deploy, kept for 48 hours, one folder per app in the bucket, with one-click restore. A new app can start from a backup folder, which is also how you move to a new server.
 - **Monitoring and logs.** Host and per-app CPU and memory, request stats, live logs, and build logs.
-- **Updates from the dashboard.** Verified downloads, and an automatic rollback (binary and database) if a new version fails to start.
-- **Rebuild anywhere.** `dootd init --restore` uses the recovery kit and the bucket to bring settings, apps and data back on a new server.
+- **Updates and recovery with the same command.** Re-running the installer updates dootd and prints a new one-time password.
 
 ## Scope
 
@@ -25,39 +24,25 @@ Cloudflare (proxied, Full strict) ──HTTPS──► dootd (TLS + routing + da
 
 ## Status
 
-🚧 Phase 7 of 7 is nearly done. What works:
-- A web dashboard to add apps, set env vars, deploy, roll back and watch logs.
-- Builds from git with the pinned Zig, health-checked deploys with automatic rollback, per-app users and cgroup limits.
-- HTTPS on :443 behind Cloudflare, with Origin CA certificates, Cloudflare-only access with Authenticated Origin Pulls, and DNS records.
-- SQLite backups to R2/S3 with one-click restore, and monitoring charts and warnings.
-- The one-line installer and `dootd init`, self-update from the dashboard with automatic rollback, and `dootd init --restore` to rebuild a server from its recovery kit.
-
-Still to do before v1.0.0: a 7-day soak test and a run against real Cloudflare and R2 on a VPS. Progress is tracked in the [Kiro spec](.kiro/specs/dootd/tasks.md).
+🚧 Phase 7 of 7: the simplification (one command, everything in the dashboard) is in progress. Still to do before v1.0.0: a 7-day soak test and a run against real Cloudflare and R2 on a VPS. Progress is tracked in the [Kiro spec](.kiro/specs/dootd/tasks.md).
 
 ## Quick start
 
 ```bash
 # on a fresh Ubuntu 24.04+ VPS, once:
 curl -fsSL https://github.com/sumitwaani2/dootd/releases/latest/download/install.sh | sudo bash
-sudo dootd init     # admin email/password, dashboard domain, Cloudflare API token
 ```
 
-Then open `https://<dashboard-domain>`, and you don't need SSH again. Updates are one click in **Settings → Updates**. [docs/cloudflare-setup.md](docs/cloudflare-setup.md) walks through the token, the setup and moving to a new server (`sudo dootd init --restore <recovery kit>`).
+Open the printed `https://<server IP>`, sign in with the printed one-time password, and follow the dashboard: your email and password, the Cloudflare token, the dashboard domain, then apps. [docs/setup.md](docs/setup.md) walks through it, including updates and moving to a new server.
 
 ### Test it on a VPS
 
 ```bash
 git clone https://github.com/sumitwaani2/dootd && cd dootd
-sudo ./scripts/e2e/phase1.sh   # installs Go-built dootd + Zig 0.16.0, runs both sample apps, 43 checks
-sudo ./scripts/e2e/phase2.sh   # deploys from local git repos with `dootd ctl`, 64 checks
-sudo ./scripts/e2e/phase3.sh   # :443 edge against a fake Cloudflare API, 50 checks
-sudo ./scripts/e2e/phase4.sh   # the dashboard, driven with curl through the edge, 83 checks
-sudo ./scripts/e2e/phase5.sh   # backups and restores with rclone serve s3 as the bucket, 55 checks
-sudo ./scripts/e2e/phase6.sh   # monitoring numbers against the kernel's counters, charts, warnings, dootd's budget, 48 checks
-sudo ./scripts/e2e/phase7.sh   # install.sh, dootd init, self-update + rollback, destroy and init --restore, 89 checks
+sudo ./scripts/e2e/phase1.sh   # ... phase7.sh
 ```
 
-The scripts need Go and install dootd as a systemd service; they run on every PR on GitHub's Ubuntu 24.04 VMs. While dootd runs, `sudo systemctl kill -s USR1 --kill-whom=main dootd` prints every app's status to `journalctl -u dootd`.
+The scripts need Go, install dootd as a systemd service and drive it only through the installer and the dashboard (with a fake Cloudflare API and `rclone serve s3` as the bucket). They run on every PR on GitHub's Ubuntu 24.04 VMs.
 
 ## Development
 
@@ -79,5 +64,5 @@ Releases: push a `vX.Y.Z` tag and GitHub Actions publishes the binaries, `checks
 | [docs/app-contract.md](docs/app-contract.md) | Writing a Zig/C app that dootd can host |
 | [docs/architecture.md](docs/architecture.md) | How dootd works inside (for maintaining it long-term) |
 | [docs/implementation-plan.md](docs/implementation-plan.md) | Phase-by-phase build plan |
-| [docs/cloudflare-setup.md](docs/cloudflare-setup.md) | API token, `dootd init`, moving servers, troubleshooting |
+| [docs/setup.md](docs/setup.md) | Install, first sign-in, Cloudflare token, updates, moving servers, troubleshooting |
 | [.kiro/specs/dootd/](.kiro/specs/dootd/) | Kiro spec: requirements, design and task list |

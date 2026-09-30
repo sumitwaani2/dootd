@@ -1,6 +1,7 @@
 // Package web is the dashboard: server-rendered HTML with a small script
 // for live logs and status refresh. It is served on the dashboard domain
-// through the edge (docs/architecture.md §14).
+// through the edge, and on the setup address while setup is open
+// (docs/architecture.md §8.1, §14).
 package web
 
 import (
@@ -26,7 +27,6 @@ import (
 	"github.com/sumitwaani2/dootd/internal/edge"
 	"github.com/sumitwaani2/dootd/internal/layout"
 	"github.com/sumitwaani2/dootd/internal/metrics"
-	"github.com/sumitwaani2/dootd/internal/selfupdate"
 	"github.com/sumitwaani2/dootd/internal/store"
 	"github.com/sumitwaani2/dootd/internal/supervisor"
 	"github.com/sumitwaani2/dootd/internal/toolchain"
@@ -45,23 +45,19 @@ const (
 
 // Server is the dashboard.
 type Server struct {
-	Auth    *auth.Auth
-	Apps    *apps.Service
-	Dep     *deployer.Deployer
-	Sup     *supervisor.Supervisor
-	Edge    *edge.Manager // nil when the edge is disabled
-	Zig     *toolchain.Zig
-	Store   *store.Store
-	Backups *backup.Service
-	// MasterKeyPath is included in the recovery kit.
-	MasterKeyPath string
-	Metrics       *metrics.Collector
-	Update        *selfupdate.Service
-	Thresholds    Thresholds
-	Layout        layout.Layout
-	Host          string // dashboard hostname
-	Version       string
-	Log           *slog.Logger
+	Auth       *auth.Auth
+	Apps       *apps.Service
+	Dep        *deployer.Deployer
+	Sup        *supervisor.Supervisor
+	Edge       *edge.Manager
+	Zig        *toolchain.Zig
+	Store      *store.Store
+	Backups    *backup.Service
+	Metrics    *metrics.Collector
+	Thresholds Thresholds
+	Layout     layout.Layout
+	Version    string
+	Log        *slog.Logger
 
 	pages map[string]*template.Template
 }
@@ -85,6 +81,8 @@ func (s *Server) Handler() (http.Handler, error) {
 	mux.Handle("GET /static/", http.StripPrefix("/static/", staticHandler(static)))
 	mux.HandleFunc("GET /login", s.loginPage)
 	mux.HandleFunc("POST /login", s.loginSubmit)
+	mux.Handle("GET /setup", s.requireSession(s.setupPage))
+	mux.Handle("POST /setup", s.requireSession(s.setupSubmit))
 
 	authed := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, s.requireSession(h)) }
 	authed("POST /logout", s.logout)
@@ -104,9 +102,7 @@ func (s *Server) Handler() (http.Handler, error) {
 	authed("POST /apps/{app}/backup", s.backupNow)
 	authed("POST /apps/{app}/restore", s.restoreBackup)
 	authed("POST /settings/s3", s.setS3)
-	authed("POST /settings/recovery-kit", s.recoveryKit)
-	authed("POST /settings/update/check", s.updateCheck)
-	authed("POST /settings/update/install", s.updateInstall)
+	authed("POST /settings/dashboard-domain", s.setDashboardDomain)
 	authed("GET /apps/{app}/logs", s.logsPage)
 	authed("GET /apps/{app}/logs/stream", s.logsStream)
 	authed("GET /deployments/{id}", s.deploymentPage)
@@ -120,6 +116,7 @@ func (s *Server) Handler() (http.Handler, error) {
 	authed("POST /settings/ssl-strict", s.sslStrict)
 	authed("POST /settings/toolchains/delete", s.deleteToolchain)
 	authed("GET /account", s.accountPage)
+	authed("POST /account/email", s.changeEmail)
 	authed("POST /account/password", s.changePassword)
 	authed("POST /account/revoke-others", s.revokeOthers)
 	return s.secure(mux), nil
@@ -156,14 +153,17 @@ func (s *Server) secure(next http.Handler) http.Handler {
 	})
 }
 
-// sameOrigin requires Origin (or, failing that, Referer) to be the dashboard.
+// sameOrigin requires Origin (or, failing that, Referer) to be this site.
+// Through Cloudflare the router only passes the dashboard domain here (and
+// Host must match the TLS server name); on the setup address it is the
+// address the browser used.
 func (s *Server) sameOrigin(r *http.Request) bool {
-	want := "https://" + s.Host
+	want := "https://" + r.Host
 	if o := r.Header.Get("Origin"); o != "" {
 		return o == want
 	}
 	ref, err := url.Parse(r.Header.Get("Referer"))
-	return err == nil && ref.Scheme == "https" && ref.Host == s.Host
+	return err == nil && ref.Scheme == "https" && ref.Host == r.Host
 }
 
 // requireSession loads the session and checks the CSRF token on POSTs.
@@ -184,6 +184,19 @@ func (s *Server) requireSession(next http.HandlerFunc) http.Handler {
 		}
 		if r.Method == http.MethodPost && !sess.CheckCSRF(r.FormValue("csrf")) {
 			http.Error(w, "invalid or missing CSRF token; reload the page and try again", http.StatusForbidden)
+			return
+		}
+		// A one-time password session may only set up the account.
+		if onSetup := r.URL.Path == "/setup"; sess.Setup != onSetup && r.URL.Path != "/logout" {
+			if r.Method != http.MethodGet {
+				http.Error(w, auth.ErrSetupRequired.Error(), http.StatusForbidden)
+				return
+			}
+			to := "/"
+			if sess.Setup {
+				to = "/setup"
+			}
+			http.Redirect(w, r, to, http.StatusSeeOther)
 			return
 		}
 		next(w, r.WithContext(context.WithValue(r.Context(), sessionKey, sess)))

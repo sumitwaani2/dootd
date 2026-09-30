@@ -31,12 +31,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Phase 2 - build and deploy
-        env:
-          E2E_GITHUB_REPO: ${{ github.repository }}
-          # PR branch, cloned over HTTPS with the workflow token (private repo)
-          E2E_GITHUB_BRANCH: ${{ github.head_ref }}
-          GITHUB_TOKEN: ${{ github.token }}
-        run: sudo --preserve-env=E2E_GITHUB_REPO,E2E_GITHUB_BRANCH,GITHUB_TOKEN env "PATH=$PATH" GOTOOLCHAIN=local ./scripts/e2e/phase2.sh
+        run: sudo env "PATH=$PATH" GOTOOLCHAIN=local ./scripts/e2e/phase2.sh
 
   phase3:
     runs-on: ubuntu-24.04
@@ -57,7 +52,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - name: Phase 4 - dashboard
+      - name: Phase 4 - first run and dashboard
         run: sudo env "PATH=$PATH" GOTOOLCHAIN=local ./scripts/e2e/phase4.sh
 
   phase5:
@@ -90,5 +85,5 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - name: Phase 7 - install, init, self-update, restore
+      - name: Phase 7 - install, update, recovery, new server
         run: sudo env "PATH=$PATH" GOTOOLCHAIN=local ./scripts/e2e/phase7.sh

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,7 +10,6 @@ import (
 	"os/signal"
 	"runtime/debug"
 	"sort"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -21,80 +19,58 @@ import (
 	"github.com/sumitwaani2/dootd/internal/builder"
 	"github.com/sumitwaani2/dootd/internal/buildinfo"
 	"github.com/sumitwaani2/dootd/internal/cgroup"
-	"github.com/sumitwaani2/dootd/internal/config"
-	"github.com/sumitwaani2/dootd/internal/control"
 	"github.com/sumitwaani2/dootd/internal/deployer"
 	"github.com/sumitwaani2/dootd/internal/edge"
 	"github.com/sumitwaani2/dootd/internal/layout"
 	"github.com/sumitwaani2/dootd/internal/logs"
 	"github.com/sumitwaani2/dootd/internal/metrics"
 	"github.com/sumitwaani2/dootd/internal/secrets"
-	"github.com/sumitwaani2/dootd/internal/selfupdate"
 	"github.com/sumitwaani2/dootd/internal/store"
 	"github.com/sumitwaani2/dootd/internal/supervisor"
+	"github.com/sumitwaani2/dootd/internal/testenv"
 	"github.com/sumitwaani2/dootd/internal/toolchain"
 	"github.com/sumitwaani2/dootd/internal/users"
 	"github.com/sumitwaani2/dootd/internal/web"
 )
 
-func runServe(args []string, stderr io.Writer) int {
-	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	cfgPath := fs.String("config", config.DefaultPath, "path to config.toml")
-	devApps := fs.String("dev-apps", "", "TEMPORARY (until the dashboard exists): TOML file listing apps")
-	socket := fs.String("socket", control.DefaultSocket, "control socket for `dootd ctl`")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	cfgExplicit := false
-	fs.Visit(func(f *flag.Flag) { cfgExplicit = cfgExplicit || f.Name == "config" })
-
+func runServe(stderr io.Writer) int {
 	log := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	if err := serve(log, *cfgPath, cfgExplicit, *devApps, *socket); err != nil {
+	if err := serve(log); err != nil {
 		log.Error("dootd stopped with an error", "err", err)
 		return 1
 	}
 	return 0
 }
 
-func serve(log *slog.Logger, cfgPath string, cfgExplicit bool, devApps, socket string) error {
+func serve(log *slog.Logger) error {
 	if os.Geteuid() != 0 {
 		return errors.New("dootd serve must run as root (it manages users and cgroups)")
 	}
 	log.Info("starting", "version", buildinfo.String())
 	tuneMemory()
 
-	cfg, err := config.Load(cfgPath, cfgExplicit)
-	if err != nil {
+	lay := layout.Default()
+	if err := layout.EnsureBase(lay); err != nil {
 		return err
 	}
-	if err := cfg.EnsureDirs(); err != nil {
-		return err
-	}
-	box, err := secrets.LoadOrCreate(cfg.MasterKey)
+	box, err := secrets.LoadOrCreate(layout.MasterKey)
 	if err != nil {
 		return err
 	}
 
 	ctx := context.Background()
-	if err := copyBeforeMigrating(ctx, log, cfg.DBPath()); err != nil {
-		return err
-	}
-	st, err := store.Open(ctx, cfg.DBPath())
+	st, err := store.Open(ctx, lay.DBPath())
 	if err != nil {
 		return err
 	}
 	defer st.Close()
-	if err := os.Chmod(cfg.DBPath(), 0o600); err != nil {
+	if err := os.Chmod(lay.DBPath(), 0o600); err != nil {
 		return err
 	}
 	ver, _ := st.SchemaVersion(ctx)
-	log.Info("state database ready", "path", cfg.DBPath(), "schema", ver)
-	if buildinfo.FailAfterMigrate != "" {
-		return errors.New("this build is made to fail after migrating (E2E rollback test)")
-	}
+	log.Info("state database ready", "path", lay.DBPath(), "schema", ver)
 
-	cg, err := cgroup.Setup(cfg.CgroupRoot)
+	cg, err := cgroup.Setup("")
 	if err != nil {
 		return err
 	}
@@ -105,7 +81,6 @@ func serve(log *slog.Logger, cfgPath string, cfgExplicit bool, devApps, socket s
 		log.Warn("killed leftover processes from a previous run", "groups", cleaned)
 	}
 
-	lay := layout.Layout{Root: cfg.DataRoot}
 	sup := supervisor.New(supervisor.Deps{Layout: lay, Cgroups: cg, Log: log})
 	dep, err := deployer.New(ctx, deployer.Deps{
 		Layout: lay, Store: st, Secrets: box, Supervisor: sup,
@@ -117,49 +92,16 @@ func serve(log *slog.Logger, cfgPath string, cfgExplicit bool, devApps, socket s
 		return err
 	}
 
-	// Test-only prebuilt/deployable apps from a file (scripts/e2e).
-	var static []string
-	if devApps != "" {
-		list, err := config.LoadDevApps(devApps)
-		if err != nil {
-			return err
-		}
-		for _, la := range list {
-			if err := register(ctx, log, sup, dep, la); err != nil {
-				return err
-			}
-			static = append(static, la.Spec.Name)
-		}
-	}
-
 	runCtx, stop := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
-	var restarting atomic.Bool
-	upd := &selfupdate.Service{
-		Updater: &selfupdate.Updater{Repo: cfg.Update.Repo, API: cfg.Update.API, Current: buildinfo.Version, DataRoot: cfg.DataRoot},
-		Store:   st, Log: log.With("component", "update"),
-		Busy: func() string {
-			for _, name := range dep.Apps() {
-				if id := dep.Pending(name); id != 0 {
-					return fmt.Sprintf("deployment #%d of %s is in progress", id, name)
-				}
-			}
-			return ""
-		},
-		Restart: func() { restarting.Store(true); stop() },
-	}
 
-	var edgeMgr *edge.Manager
-	if cfg.Edge.Listen != "off" {
-		if edgeMgr, err = newEdge(ctx, log, cfg, st, box, sup, dep); err != nil {
-			return err
-		}
-	} else {
-		log.Warn("edge disabled (edge.listen = \"off\"): apps and the dashboard are only reachable on 127.0.0.1")
+	authSvc := auth.New(st)
+	edgeMgr, err := newEdge(ctx, log, lay, st, box, sup, dep, authSvc)
+	if err != nil {
+		return err
 	}
 
 	bk := newBackups(lay, st, box, sup, dep, log)
-	bk.Interval, bk.Retention = cfg.Backups.Interval.Duration, cfg.Backups.Retention.Duration
 	iv, rt := bk.Policy()
 	log.Info("backups", "every", iv, "keep", rt)
 	if err := bk.Init(ctx); err != nil {
@@ -174,62 +116,43 @@ func serve(log *slog.Logger, cfgPath string, cfgExplicit bool, devApps, socket s
 		return err
 	}
 
-	appSvc := apps.New(st, box, dep, sup, edgeMgr, cfg.Edge.DashboardDomain, log)
+	appSvc := apps.New(st, box, dep, sup, edgeMgr, edgeMgr.DashboardHost, log)
 	appSvc.SetBackups(bk)
-	for _, n := range static {
-		appSvc.MarkStatic(n)
-	}
 	if err := appSvc.Load(ctx); err != nil {
 		return err
 	}
-	authSvc := auth.New(st)
-
-	mc := &metrics.Collector{Store: st, Sup: sup, DataRoot: cfg.DataRoot, Log: log.With("component", "metrics")}
-	if edgeMgr != nil {
-		mc.Requests = edgeMgr.Router.Stats
+	for _, rt := range appSvc.Routes() {
+		if dh := edgeMgr.DashboardHost(); dh != "" && rt.Host == dh {
+			log.Error("an app uses the dashboard domain; it is not routed", "app", rt.App, "domain", rt.Host)
+		}
 	}
 
+	mc := &metrics.Collector{Store: st, Sup: sup, DataRoot: lay.Root, Log: log.With("component", "metrics"),
+		Requests: edgeMgr.Router.Stats}
+
+	dash := &web.Server{
+		Auth: authSvc, Apps: appSvc, Dep: dep, Sup: sup, Edge: edgeMgr, Zig: dep.Zig, Store: st,
+		Backups: bk, Metrics: mc,
+		Thresholds: web.Thresholds{DiskPercent: testenv.WarnPercent(85), MemoryPercent: testenv.WarnPercent(90), CertDays: 14},
+		Layout:     lay, Version: buildinfo.Version, Log: log.With("component", "web"),
+	}
+	h, err := dash.Handler()
+	if err != nil {
+		return err
+	}
+	edgeMgr.Router.Dashboard = h
+	if edgeMgr.DashboardHost() == "" {
+		log.Warn("no dashboard domain yet: the dashboard is only on the setup address (https://<server IP>)")
+	}
+	appSvc.RefreshEdge()
 	edgeErr := make(chan error, 1)
-	if edgeMgr != nil {
-		for _, rt := range appSvc.Routes() {
-			if rt.Host == cfg.Edge.DashboardDomain {
-				return fmt.Errorf("app %s uses the dashboard domain %s", rt.App, rt.Host)
-			}
-		}
-		dash := &web.Server{
-			Auth: authSvc, Apps: appSvc, Dep: dep, Sup: sup, Edge: edgeMgr, Zig: dep.Zig, Store: st,
-			Backups: bk, MasterKeyPath: cfg.MasterKey, Metrics: mc, Update: upd,
-			Thresholds: web.Thresholds{DiskPercent: cfg.Monitoring.DiskWarnPercent,
-				MemoryPercent: cfg.Monitoring.MemoryWarnPercent, CertDays: cfg.Monitoring.CertWarnDays},
-			Layout: lay, Host: cfg.Edge.DashboardDomain, Version: buildinfo.Version, Log: log.With("component", "web"),
-		}
-		h, err := dash.Handler()
-		if err != nil {
-			return err
-		}
-		if cfg.Edge.DashboardDomain == "" {
-			log.Warn("no edge.dashboard_domain configured: the dashboard is not served")
-		} else {
-			edgeMgr.Router.Dashboard = h
-			if _, err := authSvc.Admin(ctx); errors.Is(err, auth.ErrNoAdmin) {
-				log.Warn("no dashboard admin yet; create it with: sudo dootd ctl admin set-password --email you@example.com")
-			}
-		}
-		appSvc.RefreshEdge()
-		go func() { edgeErr <- edgeMgr.Serve(runCtx) }()
-		edgeMgr.Run(runCtx)
-	}
-
-	ctl := &control.Server{Sup: sup, Dep: dep, Edge: edgeMgr, Auth: authSvc, Backups: bk, Metrics: mc, Update: upd, Layout: lay, Log: log}
-	ctlErr := make(chan error, 1)
-	go func() { ctlErr <- ctl.Serve(runCtx, socket) }()
-	log.Info("control socket ready", "path", socket)
+	go func() { edgeErr <- edgeMgr.Serve(runCtx) }()
+	edgeMgr.Run(runCtx)
 
 	dep.Run(runCtx)
 	bk.Schedule(runCtx)
 	mc.Run(runCtx)
 	go sup.StartAll(runCtx, func(name string) bool { return dep.DesiredRunning(runCtx, name) })
-	upd.FinishAfter(runCtx, 20*time.Second)
 
 	usr1 := make(chan os.Signal, 1)
 	signal.Notify(usr1, syscall.SIGUSR1)
@@ -247,13 +170,6 @@ loop:
 				sup.StopAll(context.Background())
 				return err
 			}
-		case err := <-ctlErr:
-			if err != nil {
-				log.Error("control socket failed", "err", err)
-			}
-			if runCtx.Err() != nil {
-				break loop
-			}
 		case <-runCtx.Done():
 			break loop
 		}
@@ -269,30 +185,7 @@ loop:
 	if err := sup.StopAll(stopCtx); err != nil {
 		return fmt.Errorf("stopping apps: %w", err)
 	}
-	os.Remove(socket)
-	if restarting.Load() {
-		log.Info("all apps stopped; exiting so systemd starts the new version")
-		return nil
-	}
 	log.Info("all apps stopped; bye")
-	return nil
-}
-
-// copyBeforeMigrating saves dootd.db as dootd.db.pre-update before a new
-// binary applies migrations (Req 17.3), so a rollback to the previous
-// binary also gets a schema it understands.
-func copyBeforeMigrating(ctx context.Context, log *slog.Logger, db string) error {
-	cur, latest, err := store.PendingMigrations(ctx, db)
-	if err != nil || cur == 0 || cur >= latest {
-		return nil // fresh database, up to date, or too new (store.Open reports it)
-	}
-	dst := db + selfupdate.PreUpdateSuffix
-	os.Remove(dst)
-	if err := backup.Snapshot(ctx, db, dst); err != nil {
-		return fmt.Errorf("copying dootd.db before migrating it from schema %d to %d: %w", cur, latest, err)
-	}
-	os.Chmod(dst, 0o600)
-	log.Info("saved a copy of dootd.db before migrating", "from_schema", cur, "to_schema", latest, "copy", dst)
 	return nil
 }
 
@@ -300,10 +193,6 @@ func copyBeforeMigrating(ctx context.Context, log *slog.Logger, db string) error
 func newBackups(lay layout.Layout, st *store.Store, box *secrets.Box, sup *supervisor.Supervisor, dep *deployer.Deployer, log *slog.Logger) *backup.Service {
 	return &backup.Service{
 		Layout: lay, Store: st, Box: box, Log: log.With("component", "backup"),
-		SelfSnapshot: func(ctx context.Context, dst string) error {
-			_, err := st.Writer().ExecContext(ctx, `VACUUM INTO ?`, dst)
-			return err
-		},
 		Hooks: backup.Hooks{
 			Apps: func() []string {
 				var names []string
@@ -350,19 +239,20 @@ func waitUploads(log *slog.Logger, bk *backup.Service, max time.Duration) {
 	}
 }
 
-// newEdge creates the edge manager and its router (not started yet).
-func newEdge(ctx context.Context, log *slog.Logger, cfg *config.Config, st *store.Store, box *secrets.Box,
-	sup *supervisor.Supervisor, dep *deployer.Deployer) (*edge.Manager, error) {
+// newEdge creates the edge manager and its router (not started yet). The
+// public IPs and API base are only overridden by the E2E tests.
+func newEdge(ctx context.Context, log *slog.Logger, lay layout.Layout, st *store.Store, box *secrets.Box,
+	sup *supervisor.Supervisor, dep *deployer.Deployer, au *auth.Auth) (*edge.Manager, error) {
 	m, err := edge.NewManager(ctx, edge.Config{
-		Listen: cfg.Edge.Listen, DashboardHost: cfg.Edge.DashboardDomain,
-		PublicIPv4: cfg.Edge.PublicIPv4, PublicIPv6: cfg.Edge.PublicIPv6,
-		AOP: cfg.Edge.AOPEnabled(), APIBase: cfg.Edge.CloudflareAPI, DataRoot: cfg.DataRoot,
+		Listen: ":443", PublicIPv4: testenv.PublicIPv4(), PublicIPv6: testenv.PublicIPv6(),
+		AOP: true, APIBase: testenv.CloudflareAPI(), DataRoot: lay.Root,
+		SetupPending: func() bool { return !au.SetupUntil().IsZero() },
 	}, st, box, log)
 	if err != nil {
 		return nil, err
 	}
 	m.Router = &edge.Router{
-		Dashboard: edge.PlaceholderDashboard(), DashboardHost: cfg.Edge.DashboardDomain, Log: log,
+		Log: log,
 		State: func(name string) edge.Availability {
 			if dep.Deploying(name) {
 				return edge.Deploying
@@ -380,30 +270,8 @@ func newEdge(ctx context.Context, log *slog.Logger, cfg *config.Config, st *stor
 			return edge.NotRunning
 		},
 	}
+	m.Router.SetDashboardHost(m.DashboardHost())
 	return m, nil
-}
-
-func register(ctx context.Context, log *slog.Logger, sup *supervisor.Supervisor, dep *deployer.Deployer, la config.LoadedApp) error {
-	if !la.Deployable() {
-		if _, err := sup.Add(la.Spec); err != nil {
-			return err
-		}
-		log.Info("prebuilt app registered", "app", la.Spec.Name, "port", la.Spec.Port, "release_dir", la.Spec.ReleaseDir)
-		return nil
-	}
-	a, err := dep.Register(ctx, deployer.AppConfig{
-		Base: la.Spec, Repo: la.Repo, Branch: la.Branch, Subdir: la.Subdir,
-		BuildMemory: la.BuildMemory, BuildTimeout: la.BuildTimeout,
-	})
-	if err != nil {
-		return err
-	}
-	rel := a.Spec().ReleaseID
-	if rel == "" {
-		rel = "none (deploy with: dootd ctl deploy " + la.Spec.Name + ")"
-	}
-	log.Info("app registered", "app", la.Spec.Name, "port", la.Spec.Port, "repo", la.Repo.URL, "branch", la.Branch, "release", rel)
-	return nil
 }
 
 // logStatus prints every app's state (send SIGUSR1 to dootd).

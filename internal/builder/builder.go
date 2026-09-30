@@ -42,8 +42,7 @@ type Builder struct {
 type Job struct {
 	App       string
 	User      users.User
-	Workspace string // checkout root
-	Subdir    string // app root inside the checkout ("" = checkout root)
+	Workspace string // checkout root (the app root)
 	Command   string // run with /bin/sh -c
 	ZigDir    string // directory containing the pinned zig binary
 	Env       map[string]string
@@ -56,7 +55,7 @@ type Job struct {
 var ErrTimeout = errors.New("build timed out")
 
 // AppRoot returns the directory the build (and later the app) runs in.
-func (j Job) AppRoot() string { return filepath.Join(j.Workspace, j.Subdir) }
+func (j Job) AppRoot() string { return j.Workspace }
 
 // Run executes the build. On return no build process is left running.
 func (b *Builder) Run(ctx context.Context, j Job) error {
@@ -68,7 +67,7 @@ func (b *Builder) Run(ctx context.Context, j Job) error {
 	}
 	root := j.AppRoot()
 	if st, err := os.Stat(root); err != nil || !st.IsDir() {
-		return fmt.Errorf("app path %q does not exist in the repository", j.Subdir)
+		return fmt.Errorf("checkout %s is missing", root)
 	}
 	if err := chownTree(j.Workspace, j.User); err != nil {
 		return err
@@ -116,7 +115,7 @@ func (b *Builder) Run(ctx context.Context, j Job) error {
 		UseCgroupFD: true,
 		CgroupFD:    fd,
 	}
-	j.Log.Writef("$ %s   (in %s, as %s, memory %dM, timeout %s)", j.Command, displayDir(j.Subdir), j.User.Name, j.MemoryMax>>20, j.Timeout)
+	j.Log.Writef("$ %s   (in the repo root, as %s, memory %dM, timeout %s)", j.Command, j.User.Name, j.MemoryMax>>20, j.Timeout)
 	start := time.Now()
 	err = cmd.Start()
 	outW.Close()
@@ -168,13 +167,6 @@ func (b *Builder) Run(ctx context.Context, j Job) error {
 	// Remove the group so OOM counters start fresh next time.
 	g.Remove()
 	return result
-}
-
-func displayDir(sub string) string {
-	if sub == "" {
-		return "repo root"
-	}
-	return sub
 }
 
 func exitError(err error) error {

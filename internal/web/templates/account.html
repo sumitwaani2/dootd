@@ -2,7 +2,14 @@
 {{$csrf := .CSRF}}
 <section class="card">
   <h1>Account</h1>
-  <p>Signed in as <b>{{.Admin}}</b>. To change the email or reset a forgotten password, run <code>sudo dootd ctl admin set-password --email …</code> over SSH.</p>
+  <p>Signed in as <b>{{.Admin}}</b>. Forgot the password? Run the install command again over SSH: it prints a one-time password.</p>
+  <h2>Change email</h2>
+  <form method="post" action="/account/email" class="grid">
+    {{template "csrf" $csrf}}
+    <label>New email <input type="email" name="email" value="{{.Admin}}" autocomplete="username" required></label>
+    <label>Current password <input type="password" name="current" autocomplete="current-password" required></label>
+    <div class="wide"><button>Change email</button></div>
+  </form>
   <h2>Change password</h2>
   <form method="post" action="/account/password" class="grid">
     {{template "csrf" $csrf}}

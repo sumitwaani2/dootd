@@ -46,7 +46,6 @@ type App struct {
 	Type         app.Type
 	Repo         string // as entered, normalized
 	Branch       string
-	Path         string
 	Domain       string
 	Port         int
 	Limits       app.Limits
@@ -54,17 +53,23 @@ type App struct {
 	BuildTimeout time.Duration
 	CreatedAt    time.Time
 	EnvNames     []string
-	Static       bool // defined in the test-only --dev-apps file
 }
 
 // Input is the form data for creating or editing an app. Empty optional
-// fields mean "default" (create) or "unchanged" is never used: edits send
-// every field.
+// fields mean "default" on create; edits send every field. The name is
+// never entered: it is derived from the repository name (Req 8.2).
 type Input struct {
-	Name, Type, Repo, Branch, Path, Domain string
-	Memory, CPU, Pids                      string
-	BuildMemory, BuildTimeout              string
+	Type, Repo, Branch, Domain string
+	Memory, CPU, Pids          string
+	BuildMemory, BuildTimeout  string
+	// RestoreFrom (create only) is a bucket folder whose newest backup is
+	// restored into the new app ("" = start empty, AutoFolder = the folder
+	// named like the app, if there is one).
+	RestoreFrom string
 }
+
+// AutoFolder picks the bucket folder with the app's own name, if present.
+const AutoFolder = "@auto"
 
 // Service manages apps.
 type Service struct {
@@ -73,38 +78,33 @@ type Service struct {
 	dep           *deployer.Deployer
 	sup           *supervisor.Supervisor
 	edge          Edge
-	dashboardHost string
+	dashboardHost func() string
 	log           *slog.Logger
 
 	mu      sync.Mutex
-	static  map[string]bool
-	backups BackupDeleter
+	backups Backups
 }
 
-// BackupDeleter removes an app's backups (implemented by internal/backup).
-type BackupDeleter interface {
+// Backups is the part of internal/backup the registry uses.
+type Backups interface {
 	DeleteAll(ctx context.Context, app string) error
+	Folders(ctx context.Context) ([]string, bool, error)
+	RestoreFolder(ctx context.Context, app, folder string) ([]string, error)
 }
 
-// SetBackups connects the backup service (used when deleting apps).
-func (s *Service) SetBackups(b BackupDeleter) { s.backups = b }
+// SetBackups connects the backup service (delete, restore on create).
+func (s *Service) SetBackups(b Backups) { s.backups = b }
 
-// New creates the service. edge may be nil.
-func New(db *store.Store, box *secrets.Box, dep *deployer.Deployer, sup *supervisor.Supervisor, e Edge, dashboardHost string, log *slog.Logger) *Service {
+// New creates the service. edge may be nil; dashboardHost returns the
+// current dashboard domain ("" if none).
+func New(db *store.Store, box *secrets.Box, dep *deployer.Deployer, sup *supervisor.Supervisor, e Edge, dashboardHost func() string, log *slog.Logger) *Service {
 	if e != nil {
 		// Avoid a typed-nil interface.
 		if m, ok := e.(*edge.Manager); ok && m == nil {
 			e = nil
 		}
 	}
-	return &Service{db: db, box: box, dep: dep, sup: sup, edge: e, dashboardHost: dashboardHost, log: log, static: map[string]bool{}}
-}
-
-// MarkStatic records apps registered from the --dev-apps file.
-func (s *Service) MarkStatic(name string) {
-	s.mu.Lock()
-	s.static[name] = true
-	s.mu.Unlock()
+	return &Service{db: db, box: box, dep: dep, sup: sup, edge: e, dashboardHost: dashboardHost, log: log}
 }
 
 func envPurpose(appName, key string) string { return "app_env:" + appName + ":" + key }
@@ -130,13 +130,13 @@ func (s *Service) Load(ctx context.Context) error {
 	return nil
 }
 
-const appCols = `name, type, repo, branch, path, domain, port, memory_max, cpu_max, pids_max, build_memory, build_timeout, created_at`
+const appCols = `name, type, repo, branch, domain, port, memory_max, cpu_max, pids_max, build_memory, build_timeout, created_at`
 
 func scanApp(r interface{ Scan(...any) error }) (App, error) {
 	var a App
 	var typ string
 	var timeout, created int64
-	err := r.Scan(&a.Name, &typ, &a.Repo, &a.Branch, &a.Path, &a.Domain, &a.Port,
+	err := r.Scan(&a.Name, &typ, &a.Repo, &a.Branch, &a.Domain, &a.Port,
 		&a.Limits.MemoryMax, &a.Limits.CPUMax, &a.Limits.PidsMax, &a.BuildMemory, &timeout, &created)
 	a.Type, a.BuildTimeout, a.CreatedAt = app.Type(typ), time.Duration(timeout)*time.Second, time.Unix(created, 0)
 	return a, err
@@ -179,23 +179,8 @@ func (s *Service) Get(ctx context.Context, name string) (App, error) {
 	return a, nil
 }
 
-// List returns stored apps plus static dev apps, sorted by name.
-func (s *Service) List(ctx context.Context) ([]App, error) {
-	list, err := s.stored(ctx)
-	if err != nil {
-		return nil, err
-	}
-	s.mu.Lock()
-	for name := range s.static {
-		if a := s.sup.Get(name); a != nil {
-			sp := a.Spec()
-			list = append(list, App{Name: sp.Name, Type: sp.Type, Domain: sp.Domain, Port: sp.Port, Limits: sp.Limits, Static: true})
-		}
-	}
-	s.mu.Unlock()
-	sort.Slice(list, func(i, j int) bool { return list[i].Name < list[j].Name })
-	return list, nil
-}
+// List returns the stored apps, sorted by name.
+func (s *Service) List(ctx context.Context) ([]App, error) { return s.stored(ctx) }
 
 func (s *Service) env(ctx context.Context, name string) (map[string]string, error) {
 	rows, err := s.db.Reader().QueryContext(ctx, `SELECT name, value FROM app_env WHERE app = ?`, name)
@@ -233,7 +218,7 @@ func (s *Service) config(ctx context.Context, a App) (deployer.AppConfig, error)
 			Name: a.Name, Type: a.Type, Domain: a.Domain, Port: a.Port,
 			HealthPath: app.DefaultHealthPath, Env: env, Limits: a.Limits,
 		},
-		Repo: repo, Branch: a.Branch, Subdir: a.Path,
+		Repo: repo, Branch: a.Branch,
 		BuildMemory: a.BuildMemory, BuildTimeout: a.BuildTimeout,
 	}, nil
 }
@@ -245,10 +230,6 @@ func (s *Service) validate(ctx context.Context, in Input, existing *App) (App, e
 	if existing != nil {
 		a = *existing
 	} else {
-		a.Name = strings.TrimSpace(in.Name)
-		if err := app.ValidateName(a.Name); err != nil {
-			errs = append(errs, err)
-		}
 		a.Type = app.Type(in.Type)
 		if a.Type != app.TypeZig && a.Type != app.TypeC {
 			errs = append(errs, errors.New("type must be zig or c"))
@@ -257,10 +238,21 @@ func (s *Service) validate(ctx context.Context, in Input, existing *App) (App, e
 	repo, err := github.ParseRepo(in.Repo)
 	if err != nil {
 		errs = append(errs, err)
-	} else if repo.GitHub {
-		a.Repo = "https://github.com/" + repo.Owner + "/" + repo.Name
 	} else {
-		a.Repo = repo.URL
+		if repo.GitHub {
+			a.Repo = "https://github.com/" + repo.Owner + "/" + repo.Name
+		} else {
+			a.Repo = repo.URL
+		}
+		name, err := app.NameFromRepo(repo.RepoName())
+		switch {
+		case err != nil:
+			errs = append(errs, err)
+		case existing == nil:
+			a.Name = name
+		case name != existing.Name:
+			errs = append(errs, fmt.Errorf("the app is named after its repository, so it can only move to a repository named %q", existing.Name))
+		}
 	}
 	a.Branch = strings.TrimSpace(in.Branch)
 	if a.Branch == "" {
@@ -269,14 +261,11 @@ func (s *Service) validate(ctx context.Context, in Input, existing *App) (App, e
 	if err := github.ValidateBranch(a.Branch); err != nil {
 		errs = append(errs, err)
 	}
-	if a.Path, err = app.CleanSubdir(in.Path); err != nil {
-		errs = append(errs, fmt.Errorf("path: %w", err))
-	}
 	a.Domain = strings.ToLower(strings.TrimSpace(in.Domain))
 	if a.Domain != "" {
 		if err := edge.ValidHostname(a.Domain); err != nil {
 			errs = append(errs, err)
-		} else if a.Domain == s.dashboardHost {
+		} else if a.Domain == s.dashboardHost() {
 			errs = append(errs, errors.New("that domain is used by the dashboard"))
 		}
 	}
@@ -320,12 +309,12 @@ func (s *Service) validate(ctx context.Context, in Input, existing *App) (App, e
 			errs = append(errs, err)
 		}
 	}
-	// Uniqueness across stored and static apps.
+	// Uniqueness.
 	for _, other := range s.sup.Apps() {
 		sp := other.Spec()
 		if sp.Name == a.Name {
-			if existing == nil {
-				errs = append(errs, fmt.Errorf("an app named %q already exists", a.Name))
+			if existing == nil && a.Name != "" {
+				errs = append(errs, fmt.Errorf("an app named %q (from a repository with the same name) already exists", a.Name))
 			}
 			continue
 		}
@@ -349,8 +338,54 @@ func (s *Service) freePort() (int, error) {
 	return 0, errors.New("no free port")
 }
 
-// Create stores and registers a new app (Req 7.1, 7.2). It does not deploy.
-func (s *Service) Create(ctx context.Context, in Input) (App, error) {
+// Created is the result of Create.
+type Created struct {
+	App
+	// RestoredFrom is the bucket folder whose newest backup was put into
+	// DATA_DIR ("" = started empty), with the database files restored.
+	RestoredFrom string
+	Restored     []string
+	// RestoreErr is set when the requested restore failed. The app is
+	// created anyway, with an empty DATA_DIR.
+	RestoreErr error
+}
+
+// Create stores and registers a new app (Req 8.1–8.4), restoring the
+// chosen bucket folder into it. It does not deploy.
+func (s *Service) Create(ctx context.Context, in Input) (Created, error) {
+	a, err := s.create(ctx, in)
+	res := Created{App: a}
+	if err != nil || in.RestoreFrom == "" || s.backups == nil {
+		return res, err
+	}
+	folder := in.RestoreFrom
+	if folder == AutoFolder {
+		folders, ok, err := s.backups.Folders(ctx)
+		if err != nil {
+			res.RestoreErr = fmt.Errorf("listing the bucket: %w", err)
+			return res, nil
+		}
+		folder = ""
+		for _, f := range folders {
+			if ok && f == a.Name {
+				folder = f
+			}
+		}
+		if folder == "" {
+			return res, nil
+		}
+	}
+	rctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	res.RestoredFrom = folder
+	res.Restored, res.RestoreErr = s.backups.RestoreFolder(rctx, a.Name, folder)
+	if res.RestoreErr != nil {
+		s.log.Warn("restoring the bucket folder into the new app failed", "app", a.Name, "folder", folder, "err", res.RestoreErr)
+	}
+	return res, nil
+}
+
+func (s *Service) create(ctx context.Context, in Input) (App, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.sup.Apps()) >= maxApps {
@@ -364,8 +399,8 @@ func (s *Service) Create(ctx context.Context, in Input) (App, error) {
 		return a, err
 	}
 	a.CreatedAt = time.Now()
-	if _, err := s.db.Writer().ExecContext(ctx, `INSERT INTO apps (`+appCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		a.Name, string(a.Type), a.Repo, a.Branch, a.Path, a.Domain, a.Port, a.Limits.MemoryMax, a.Limits.CPUMax,
+	if _, err := s.db.Writer().ExecContext(ctx, `INSERT INTO apps (`+appCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		a.Name, string(a.Type), a.Repo, a.Branch, a.Domain, a.Port, a.Limits.MemoryMax, a.Limits.CPUMax,
 		a.Limits.PidsMax, a.BuildMemory, int64(a.BuildTimeout/time.Second), a.CreatedAt.Unix()); err != nil {
 		return a, fmt.Errorf("save app: %w", err)
 	}
@@ -395,9 +430,9 @@ func (s *Service) Update(ctx context.Context, name string, in Input) (App, error
 	if err != nil {
 		return a, err
 	}
-	if _, err := s.db.Writer().ExecContext(ctx, `UPDATE apps SET repo = ?, branch = ?, path = ?, domain = ?, memory_max = ?,
+	if _, err := s.db.Writer().ExecContext(ctx, `UPDATE apps SET repo = ?, branch = ?, domain = ?, memory_max = ?,
 		cpu_max = ?, pids_max = ?, build_memory = ?, build_timeout = ? WHERE name = ?`,
-		a.Repo, a.Branch, a.Path, a.Domain, a.Limits.MemoryMax, a.Limits.CPUMax, a.Limits.PidsMax,
+		a.Repo, a.Branch, a.Domain, a.Limits.MemoryMax, a.Limits.CPUMax, a.Limits.PidsMax,
 		a.BuildMemory, int64(a.BuildTimeout/time.Second), name); err != nil {
 		return a, err
 	}

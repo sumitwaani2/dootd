@@ -1,12 +1,18 @@
 {{define "content"}}
 <section class="card narrow">
   <h1>Sign in</h1>
-  {{with .Data.NoAdmin}}<p class="warn">{{.}}</p>{{end}}
   {{with .Data.Error}}<p class="error">{{.}}</p>{{end}}
+  {{if .Data.OneTimeOnly}}
+  <p class="info">This is the setup address. Only the one-time password from the install command works here.{{with .Data.Dashboard}} To sign in with your email and password, open <a href="https://{{.}}/">https://{{.}}</a>.{{end}}</p>
+  {{else if .Data.NoAdmin}}
+  <p class="info">Welcome. Sign in with the one-time password printed by the install command.</p>
+  {{else if .Data.SetupPending}}
+  <p class="muted">Signing in with the one-time password from the install command? Leave the email empty.</p>
+  {{end}}
   <form method="post" action="/login">
     <input type="hidden" name="next" value="{{.Data.Next}}">
-    <label>Email <input type="email" name="email" value="{{.Data.Email}}" autocomplete="username" required autofocus></label>
-    <label>Password <input type="password" name="password" autocomplete="current-password" required></label>
+    {{if not (or .Data.NoAdmin .Data.OneTimeOnly)}}<label>Email <input type="email" name="email" value="{{.Data.Email}}" autocomplete="username" autofocus></label>{{end}}
+    <label>{{if or .Data.NoAdmin .Data.OneTimeOnly}}One-time password{{else}}Password{{end}} <input type="password" name="password" autocomplete="current-password" required {{if or .Data.NoAdmin .Data.OneTimeOnly}}autofocus{{end}}></label>
     <button class="primary">Sign in</button>
   </form>
 </section>

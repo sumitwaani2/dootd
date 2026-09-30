@@ -25,9 +25,10 @@ import (
 
 // Settings keys.
 const (
-	SettingCFToken  = "cloudflare_token"
-	purposeCFToken  = "settings:cloudflare_token"
-	settingCFRanges = "cloudflare_ip_ranges"
+	SettingCFToken         = "cloudflare_token"
+	purposeCFToken         = "settings:cloudflare_token"
+	settingCFRanges        = "cloudflare_ip_ranges"
+	SettingDashboardDomain = "dashboard_domain"
 )
 
 // Timings.
@@ -39,15 +40,17 @@ const (
 	aopActivateWait = 3 * time.Minute
 )
 
-// Config configures the edge.
+// Config configures the edge. Nothing here is user-configurable: the
+// public IPs and the API base are only overridden by the E2E tests.
 type Config struct {
-	Listen        string // e.g. ":443"
-	DashboardHost string
-	PublicIPv4    string // "" = auto-detect
-	PublicIPv6    string // "" = auto-detect, "off" = no AAAA records
-	AOP           bool   // zone-level Authenticated Origin Pulls
-	APIBase       string // Cloudflare API base (tests)
-	DataRoot      string
+	Listen     string // ":443"
+	PublicIPv4 string // "" = auto-detect
+	PublicIPv6 string // "" = auto-detect, "off" = no AAAA records
+	AOP        bool   // zone-level Authenticated Origin Pulls (always on in dootd serve)
+	APIBase    string // Cloudflare API base (tests)
+	DataRoot   string
+	// SetupPending reports whether a one-time password is pending (§8.1).
+	SetupPending func() bool
 }
 
 // Manager owns certificates, Cloudflare state and the listener.
@@ -60,10 +63,13 @@ type Manager struct {
 	Certs  *CertStore
 	Router *Router
 
-	syncMu sync.Mutex // one reconcile at a time
+	syncMu    sync.Mutex // one reconcile at a time
+	setupCert *tls.Certificate
 
 	mu        sync.RWMutex
 	aop       *AOP
+	dashHost  string
+	routes    []Route
 	hosts     []hostEntry
 	hostZone  map[string]string // host -> zone id
 	enforce   map[string]bool   // zone id -> require AOP client certs
@@ -103,7 +109,7 @@ type ZoneStatus struct {
 	AOPSerial string `json:"-"`
 }
 
-// Status is a snapshot for `dootd ctl edge`.
+// Status is a snapshot for the settings page.
 type Status struct {
 	Listen      string       `json:"listen"`
 	Dashboard   string       `json:"dashboard_host"`
@@ -144,10 +150,88 @@ func NewManager(ctx context.Context, cfg Config, st *store.Store, box *secrets.B
 			m.log.Info("using saved Cloudflare IP ranges", "count", len(rs))
 		}
 	}
+	if m.setupCert, err = loadOrCreateSetupCert(filepath.Join(cfg.DataRoot, "setup")); err != nil {
+		return nil, err
+	}
+	if v, ok, _ := st.GetSetting(ctx, SettingDashboardDomain); ok {
+		m.dashHost = string(v)
+	}
 	if err := m.loadState(ctx); err != nil {
 		return nil, err
 	}
 	return m, nil
+}
+
+// DashboardHost is the dashboard domain ("" = not set yet).
+func (m *Manager) DashboardHost() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.dashHost
+}
+
+// DashboardReady reports whether the dashboard domain works through
+// Cloudflare: its certificate is installed and AOP is enforced for its zone.
+func (m *Manager) DashboardReady() bool {
+	m.mu.RLock()
+	h := m.dashHost
+	enforced := m.enforce[m.hostZone[h]]
+	m.mu.RUnlock()
+	return h != "" && m.Certs.Get(h) != nil && (enforced || !m.cfg.AOP)
+}
+
+// SetupOpen reports whether the setup address accepts connections: until
+// the dashboard domain is ready, and while a one-time password is pending.
+func (m *Manager) SetupOpen() bool {
+	return !m.DashboardReady() || (m.cfg.SetupPending != nil && m.cfg.SetupPending())
+}
+
+// SetDashboardHost sets the dashboard domain (Req 7.2): it needs the
+// Cloudflare token, must not be an app's domain, is routed at once and set
+// up in the background. The old domain's DNS records and certificate are
+// removed.
+func (m *Manager) SetDashboardHost(ctx context.Context, host string) error {
+	host = normalizeHost(strings.TrimSpace(host))
+	if err := ValidHostname(host); err != nil {
+		return err
+	}
+	if _, err := m.token(ctx); err != nil {
+		return errors.New("save the Cloudflare token first")
+	}
+	m.mu.Lock()
+	old := m.dashHost
+	for _, r := range m.routes {
+		if r.Host == host {
+			m.mu.Unlock()
+			return fmt.Errorf("%s is the domain of the app %s", host, r.App)
+		}
+	}
+	m.mu.Unlock()
+	if host == old {
+		m.SyncInBackground()
+		return nil
+	}
+	if err := m.store.SetSetting(ctx, SettingDashboardDomain, []byte(host)); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.dashHost = host
+	m.mu.Unlock()
+	m.Router.SetDashboardHost(host)
+	m.rebuildHosts()
+	m.log.Info("dashboard domain set", "domain", host, "previous", old)
+	go func() {
+		bctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		if old != "" {
+			if err := m.RemoveHost(bctx, old); err != nil {
+				m.log.Warn("cleaning up the old dashboard domain", "domain", old, "err", err)
+			}
+		}
+		if _, err := m.Sync(bctx); err != nil {
+			m.log.Warn("cloudflare sync failed", "err", err)
+		}
+	}()
+	return nil
 }
 
 func (m *Manager) loadState(ctx context.Context) error {
@@ -199,16 +283,23 @@ func aopLabel(configured, enforced bool) string {
 // SetRoutes sets the app routes (and the hostnames to manage).
 func (m *Manager) SetRoutes(routes []Route) {
 	m.Router.SetRoutes(routes)
+	m.mu.Lock()
+	m.routes = append([]Route(nil), routes...)
+	m.mu.Unlock()
+	m.rebuildHosts()
+}
+
+func (m *Manager) rebuildHosts() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	var hs []hostEntry
-	if m.cfg.DashboardHost != "" {
-		hs = append(hs, hostEntry{Host: m.cfg.DashboardHost})
+	if m.dashHost != "" {
+		hs = append(hs, hostEntry{Host: m.dashHost})
 	}
-	for _, r := range routes {
+	for _, r := range m.routes {
 		hs = append(hs, hostEntry{Host: r.Host, App: r.App})
 	}
-	m.mu.Lock()
 	m.hosts = hs
-	m.mu.Unlock()
 }
 
 // tlsConfig picks the certificate by SNI and requires the AOP client
@@ -217,6 +308,14 @@ func (m *Manager) tlsConfig() *tls.Config {
 	return &tls.Config{
 		MinVersion: tls.VersionTLS12,
 		GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+			if _, ok := hello.Conn.(*setupConn); ok {
+				// Setup address: self-signed, whatever the server name.
+				return &tls.Config{
+					MinVersion:   tls.VersionTLS12,
+					Certificates: []tls.Certificate{*m.setupCert},
+					NextProtos:   []string{"h2", "http/1.1"},
+				}, nil
+			}
 			host := normalizeHost(hello.ServerName)
 			cert := m.Certs.Get(host)
 			if cert == nil {
@@ -246,9 +345,12 @@ func (m *Manager) Serve(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("edge: listen %s: %w", m.cfg.Listen, err)
 	}
-	fl := m.Filter.Listen(ln, m.log)
+	fl := m.Filter.Listen(ln, m.log, m.SetupOpen)
+	m.Router.SetupOpen = m.SetupOpen
+	m.Router.SetDashboardHost(m.DashboardHost())
 	srv := &http.Server{
 		Handler:           m.Router,
+		ConnContext:       connContext,
 		TLSConfig:         m.tlsConfig(),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
@@ -331,7 +433,7 @@ func (m *Manager) token(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if !ok {
-		return "", errors.New("no Cloudflare API token set (run: dootd ctl cloudflare-token)")
+		return "", errors.New("no Cloudflare API token set (Settings → Cloudflare)")
 	}
 	b, err := m.box.Open(v, purposeCFToken)
 	if err != nil {
@@ -527,7 +629,7 @@ func (m *Manager) syncZone(ctx context.Context, c *cloudflare.Client, z cloudfla
 	}
 	zs.SSLMode = mode
 	if mode != "" && mode != "strict" {
-		zs.Warning = fmt.Sprintf("SSL/TLS mode is %q; use Full (strict) so Cloudflare verifies dootd's certificate (dootd ctl edge set-strict %s)", mode, z.Name)
+		zs.Warning = fmt.Sprintf("SSL/TLS mode is %q; use Full (strict) so Cloudflare verifies dootd's certificate (Settings → Zones → Set Full (strict))", mode)
 	}
 
 	enforced := false
@@ -672,7 +774,7 @@ func (m *Manager) publicIPs(ctx context.Context) (string, string, error) {
 		if v4 == "" {
 			ip, err := DetectIP(ctx, "tcp4")
 			if err != nil {
-				return "", "", fmt.Errorf("detecting the public IPv4 address failed (set edge.public_ipv4 in config.toml): %w", err)
+				return "", "", fmt.Errorf("detecting the server's public IPv4 address failed: %w", err)
 			}
 			v4 = ip
 		}
@@ -740,7 +842,7 @@ func (m *Manager) Status(ctx context.Context) Status {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	s := Status{
-		Listen: m.cfg.Listen, Dashboard: m.cfg.DashboardHost, TokenSet: tokErr == nil,
+		Listen: m.cfg.Listen, Dashboard: m.dashHost, TokenSet: tokErr == nil,
 		PublicIPv4: m.pubV4, PublicIPv6: m.pubV6, IPRanges: len(ranges), IPSource: src,
 		Rejected: m.Filter.Rejected(), LastSync: m.lastSync, LastError: m.lastErr,
 		AOPClientTo: m.aop.Client.NotAfter,

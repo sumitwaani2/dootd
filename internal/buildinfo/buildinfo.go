@@ -14,11 +14,6 @@ var (
 	Date    = "unknown"
 )
 
-// FailAfterMigrate makes `dootd serve` exit with an error right after it
-// migrated dootd.db. Only scripts/e2e/phase7.sh sets it (via -ldflags), to
-// build a release that cannot start and test the update rollback.
-var FailAfterMigrate = ""
-
 // String returns a single human-readable version line.
 func String() string {
 	return fmt.Sprintf("dootd %s (commit %s, built %s, %s %s/%s)",
