@@ -192,5 +192,12 @@ Tasks 46–47 built a CLI bootstrap (`dootd init`, `init --restore`, recovery ki
   - _Requirements: 9.3–9.5, 10_
 - [x] 63. E2E with a fake GitHub API (`e2etool ghmock`) and releases built by the samples' own workflows
   - Automated: phases 1–7, 487 checks; 25 MB idle RSS with 5 apps, 18 MB binary
-- [ ] 49. 7-day soak test with 5 apps on a 1 GB VPS, plus a run against real Cloudflare and R2
+- [x] 64. First run on a real VPS (Ubuntu 26.04, 1 vCPU, 1.6 GB) with real Cloudflare, R2 and GitHub releases (`v1.0.0-rc1`); fixes for what it found
+  - Dashboard domain ready only when its zone is active and in Full/Full (strict) mode; the pages say what is missing (a Flexible zone had locked the user out, D41)
+  - Saving the Cloudflare token lists missing permissions (Req 7.1)
+  - Health check errors name the real cause (a 404 was reported as "nothing listening")
+  - A kept release whose files are missing is downloaded again instead of failing
+  - Measured: 25 MB idle RSS with 5 apps, 0.6 ms p50 proxy overhead, restart of 5 apps ~2 s, reboot to serving ~20 s
+  - _Requirements: 3.2, 7.1, 10.5, 10.6_
+- [ ] 49. 7-day soak test with 5 apps on a 1 GB VPS, plus a run against real Cloudflare and R2 (the real run is task 64; the 7-day soak is still open)
 - [ ] 50. Tag `v1.0.0`

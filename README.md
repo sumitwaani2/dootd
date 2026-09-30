@@ -24,7 +24,7 @@ Cloudflare (proxied, Full strict) ──HTTPS──► dootd (TLS + routing + da
 
 ## Status
 
-🚧 Phase 7 of 7: the simplification (one command, everything in the dashboard) is in progress. Still to do before v1.0.0: a 7-day soak test and a run against real Cloudflare and R2 on a VPS. Progress is tracked in the [Kiro spec](.kiro/specs/dootd/tasks.md).
+🚧 Phase 7 of 7: `v1.0.0-rc1` ran end to end on a real VPS with real Cloudflare, R2 and GitHub releases. Still to do before v1.0.0: a 7-day soak test. Progress is tracked in the [Kiro spec](.kiro/specs/dootd/tasks.md).
 
 ## Quick start
 
