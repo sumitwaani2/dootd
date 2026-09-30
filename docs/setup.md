@@ -41,7 +41,8 @@ You can close SSH now.
 4. **Settings → Dashboard domain**: enter e.g. `dootd.example.com`. dootd creates the DNS record, the certificate and the origin pull setup, and shows the progress. When it is ready, open `https://dootd.example.com` and sign in with your email and password. From then on the IP address no longer answers.
 5. **Settings → GitHub** (for private repos): a fine-grained token with *Contents: Read-only* on your repos.
 6. **Settings → Backups**: an R2 bucket (endpoint `https://<account id>.r2.cloudflarestorage.com`, region `auto`, an R2 API token with Object Read & Write on that bucket).
-7. **Apps → Add app**: pick the repo, branch, type and domain (e.g. `blog.example.com`). The app is named after the repo. Add env vars if needed, press **Deploy** and watch the build log.
+7. **Your app repo** needs a `dootd.toml` and the release workflow (copy it from a sample, see [app-contract.md §2](app-contract.md#2-releases)). Push a tag (`git tag v1.0.0 && git push origin v1.0.0`): GitHub Actions tests and builds it and publishes a release.
+8. **Apps → Add app**: pick the repo and a domain (e.g. `blog.example.com`). The app is named after the repo. Add env vars if needed, choose a release in **Deploy** (the latest is preselected) and watch the deploy log.
 
 The home page lists any step that is still missing.
 

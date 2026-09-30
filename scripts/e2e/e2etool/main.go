@@ -6,6 +6,8 @@
 //	    uploaded client cert/key are written to DIR/aop-client.{pem,key}, the
 //	    way Cloudflare's edge would present them) and /ips. GET /_mock/state
 //	    dumps everything as JSON.
+//	e2etool ghmock -listen ADDR -dir DIR [-token T]
+//	    A fake GitHub API: releases and their assets from DIR (see ghmock.go).
 //	e2etool echo [-delay D]
 //	    An app following the dootd contract that echoes request details as
 //	    JSON, streams on /stream and echoes raw bytes after an Upgrade on
@@ -44,11 +46,13 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		log.Fatal("usage: e2etool cfmock|echo|upgrade ...")
+		log.Fatal("usage: e2etool cfmock|ghmock|echo|upgrade ...")
 	}
 	switch os.Args[1] {
 	case "cfmock":
 		cfmock(os.Args[2:])
+	case "ghmock":
+		ghmock(os.Args[2:])
 	case "echo":
 		echo(os.Args[2:])
 	case "upgrade":

@@ -1,10 +1,11 @@
 // Package deployer implements the deploy pipeline (docs/architecture.md
-// §11): clone → validate dootd.toml → ensure Zig → build → release →
-// stop old → pre-deploy backup → switch → start + health check, with
-// automatic rollback when the new release is unhealthy.
+// §11): GitHub release → download + checksum → safe unpack → dootd.toml and
+// ELF check → stop old → pre-deploy backup → switch → start + health check,
+// with automatic rollback when the new release is unhealthy. dootd never
+// builds anything.
 //
 // All deploys and rollbacks on the host run one at a time from a single
-// queue, so builds never compete for a small VPS's memory.
+// queue.
 package deployer
 
 import (
@@ -14,6 +15,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,7 +24,7 @@ import (
 	"time"
 
 	"github.com/sumitwaani2/dootd/internal/app"
-	"github.com/sumitwaani2/dootd/internal/builder"
+	"github.com/sumitwaani2/dootd/internal/artifact"
 	"github.com/sumitwaani2/dootd/internal/github"
 	"github.com/sumitwaani2/dootd/internal/layout"
 	"github.com/sumitwaani2/dootd/internal/logs"
@@ -29,7 +32,6 @@ import (
 	"github.com/sumitwaani2/dootd/internal/secrets"
 	"github.com/sumitwaani2/dootd/internal/store"
 	"github.com/sumitwaani2/dootd/internal/supervisor"
-	"github.com/sumitwaani2/dootd/internal/toolchain"
 	"github.com/sumitwaani2/dootd/internal/users"
 )
 
@@ -45,13 +47,30 @@ const (
 	purposeGitHubToken = "settings:github_token"
 )
 
+// Limits of a release download.
+const (
+	maxAsset     = 1 << 30
+	maxChecksums = 64 << 10
+	releasesTTL  = time.Minute
+	// ListReleases is how many GitHub releases the app page offers.
+	ListReleases = 10
+)
+
 // AppConfig is the deploy configuration of one app.
 type AppConfig struct {
-	Base         app.Spec // name, type, domain, port, env, limits (no release fields)
-	Repo         github.Repo
-	Branch       string
-	BuildMemory  int64
-	BuildTimeout time.Duration
+	Base app.Spec // name, domain, port, env, limits (no release fields)
+	Repo github.Repo
+}
+
+var tagRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+// ValidateTag checks that a release tag can be used as a release directory
+// name and as DOOTD_RELEASE.
+func ValidateTag(tag string) error {
+	if !tagRe.MatchString(tag) || strings.Contains(tag, "..") {
+		return fmt.Errorf("release tag %q is not supported: use letters, digits, '.', '_' and '-' (e.g. v1.4.0)", tag)
+	}
+	return nil
 }
 
 // Deps are the deployer's collaborators.
@@ -60,8 +79,6 @@ type Deps struct {
 	Store      *store.Store
 	Secrets    *secrets.Box
 	Supervisor *supervisor.Supervisor
-	Builder    *builder.Builder
-	Zig        *toolchain.Zig
 	Log        *slog.Logger
 	// PreDeploy runs after the old release stopped and before the switch.
 	// Phase 5 plugs the SQLite backup in here. A returned error aborts the
@@ -80,6 +97,7 @@ type Deployer struct {
 	pending   map[string]int64  // app -> queued or running deployment
 	held      map[string]string // app -> reason (e.g. a restore) that blocks deployments
 	deploying map[string]bool   // app is between "stop old" and "healthy/failed"
+	releases  map[string]cachedReleases
 
 	queue  chan job
 	ctx    context.Context
@@ -91,11 +109,17 @@ type job struct {
 	id      int64
 	app     string
 	kind    string
-	release string // rollback target
+	release string // the tag to deploy, or the kept release to roll back to
+}
+
+type cachedReleases struct {
+	at   time.Time
+	list []github.Release
+	err  error
 }
 
 // New creates a deployer, marks interrupted deployments as failed and
-// cleans leftover build workspaces. Call Run to start the worker.
+// cleans leftover downloads. Call Run to start the worker.
 func New(ctx context.Context, d Deps) (*Deployer, error) {
 	if d.Log == nil {
 		d.Log = slog.Default()
@@ -108,6 +132,7 @@ func New(ctx context.Context, d Deps) (*Deployer, error) {
 		pending:   map[string]int64{},
 		held:      map[string]string{},
 		deploying: map[string]bool{},
+		releases:  map[string]cachedReleases{},
 		queue:     make(chan job, 64),
 	}
 	if n, err := dp.recoverInterrupted(ctx); err != nil {
@@ -115,7 +140,6 @@ func New(ctx context.Context, d Deps) (*Deployer, error) {
 	} else if n > 0 {
 		dp.log.Warn("marked deployments interrupted by a restart as failed", "count", n)
 	}
-	d.Zig.CleanTemp()
 	return dp, nil
 }
 
@@ -134,7 +158,7 @@ func (d *Deployer) Register(ctx context.Context, cfg AppConfig) (*supervisor.App
 	if err != nil {
 		return nil, err
 	}
-	for _, e := range []string{d.Layout.BuildsDir(spec.Name)} {
+	for _, e := range []string{d.Layout.DownloadsDir(spec.Name)} {
 		entries, _ := os.ReadDir(e)
 		for _, x := range entries {
 			os.RemoveAll(filepath.Join(e, x.Name()))
@@ -172,12 +196,59 @@ func (d *Deployer) Deploying(appName string) bool {
 	return d.deploying[appName]
 }
 
-// Deploy queues a build + deploy of the branch HEAD.
-func (d *Deployer) Deploy(ctx context.Context, appName string) (int64, error) {
-	return d.enqueue(ctx, appName, KindDeploy, "")
+// Deploy queues a deploy of the GitHub release tag.
+func (d *Deployer) Deploy(ctx context.Context, appName, tag string) (int64, error) {
+	tag = strings.TrimSpace(tag)
+	if tag == "" {
+		return 0, errors.New("choose a release to deploy")
+	}
+	if err := ValidateTag(tag); err != nil {
+		return 0, err
+	}
+	if d.currentRelease(appName) == tag {
+		return 0, fmt.Errorf("release %s is already running (use Restart to restart it)", tag)
+	}
+	return d.enqueue(ctx, appName, KindDeploy, tag)
 }
 
-// Rollback queues a switch to a kept release (no build).
+// GitHubReleases lists the newest published releases of an app's
+// repository, cached for a minute (the app page refreshes every 5 s).
+func (d *Deployer) GitHubReleases(ctx context.Context, appName string) ([]github.Release, error) {
+	d.mu.Lock()
+	cfg, ok := d.apps[appName]
+	c, cached := d.releases[appName]
+	d.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("unknown app %q", appName)
+	}
+	if cached && time.Since(c.at) < releasesTTL {
+		return c.list, c.err
+	}
+	token, err := d.GitHubToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	list, err := (&github.API{Token: token}).Releases(cctx, cfg.Repo, ListReleases)
+	d.mu.Lock()
+	d.releases[appName] = cachedReleases{at: time.Now(), list: list, err: err}
+	d.mu.Unlock()
+	return list, err
+}
+
+// ForgetReleases drops the cached release list of app ("" = every app).
+func (d *Deployer) ForgetReleases(appName string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if appName == "" {
+		d.releases = map[string]cachedReleases{}
+	} else {
+		delete(d.releases, appName)
+	}
+}
+
+// Rollback queues a switch to a kept release (no download).
 func (d *Deployer) Rollback(ctx context.Context, appName, releaseID string) (int64, error) {
 	if _, err := d.release(ctx, appName, releaseID); err != nil {
 		return 0, err
@@ -271,14 +342,14 @@ func (d *Deployer) runJob(j job) {
 		return
 	}
 	start := time.Now()
-	d.setStatus(j.id, StatusBuilding)
+	d.setStatus(j.id, StatusPreparing)
 	d.log.Info("deployment started", "app", j.app, "id", j.id, "kind", j.kind)
 
 	if j.kind == KindRollback {
 		lg.Writef("rollback of %s to release %s", j.app, j.release)
 		err = d.rollback(d.ctx, cfg, j, lg)
 	} else {
-		lg.Writef("deploy of %s from %s (branch %s)", j.app, displayRepo(cfg.Repo), cfg.Branch)
+		lg.Writef("deploy of %s: release %s of %s", j.app, j.release, cfg.Repo)
 		err = d.deploy(d.ctx, cfg, j, lg)
 	}
 	took := time.Since(start).Round(100 * time.Millisecond)
@@ -291,14 +362,8 @@ func (d *Deployer) runJob(j job) {
 	}
 	lg.Close()
 	d.finish(j.id, err)
+	d.ForgetReleases(j.app) // the page shows fresh releases after a deploy
 	d.pruneBuildLogs(j.app)
-}
-
-func displayRepo(r github.Repo) string {
-	if r.GitHub {
-		return r.Owner + "/" + r.Name
-	}
-	return r.URL
 }
 
 // GitHubToken returns the stored GitHub token ("" if none).
@@ -329,80 +394,111 @@ func (d *Deployer) SetGitHubToken(ctx context.Context, token string) error {
 }
 
 func (d *Deployer) deploy(ctx context.Context, cfg AppConfig, j job, lg *logs.Log) error {
-	name := cfg.Base.Name
-	u, err := users.Lookup(name)
+	name, tag := cfg.Base.Name, j.release
+	d.setRelease(j.id, tag, "")
+
+	// A release still kept on the server needs no download.
+	if kept, err := d.release(ctx, name, tag); err == nil {
+		lg.Writef("release %s is still kept on this server; switching to it (no download)", tag)
+		return d.activate(ctx, cfg, kept, j.id, lg)
+	}
+
+	// 1. The GitHub release and its assets. The running release keeps
+	// serving during steps 1-4.
+	token, err := d.GitHubToken(ctx)
 	if err != nil {
 		return err
 	}
-	ws := filepath.Join(d.Layout.BuildsDir(name), strconv.FormatInt(j.id, 10))
-	os.RemoveAll(ws)
-	defer os.RemoveAll(ws) // no-op once moved into releases/
-
-	// 1. Clone. The running release keeps serving during steps 1-5.
-	var token string
-	if cfg.Repo.GitHub {
-		if token, err = d.GitHubToken(ctx); err != nil {
-			return err
+	api := &github.API{Token: token}
+	rel, err := api.ReleaseByTag(ctx, cfg.Repo, tag)
+	if err != nil {
+		return err
+	}
+	assetName := artifact.AssetName(runtime.GOARCH)
+	asset, ok := rel.Asset(assetName)
+	if !ok {
+		var names []string
+		for _, a := range rel.Assets {
+			names = append(names, a.Name)
 		}
+		have := "none"
+		if len(names) > 0 {
+			have = strings.Join(names, ", ")
+		}
+		return fmt.Errorf("release %s has no %s for this server (it has: %s); publish it with the release workflow from docs/app-contract.md §2", tag, assetName, have)
 	}
-	lg.Writef("cloning (depth 1)")
-	co, err := github.Clone(ctx, cfg.Repo, cfg.Branch, token, ws)
+	sumsAsset, ok := rel.Asset(artifact.ChecksumsName)
+	if !ok {
+		return fmt.Errorf("release %s has no %s, so its download cannot be verified", tag, artifact.ChecksumsName)
+	}
+
+	ws := filepath.Join(d.Layout.DownloadsDir(name), strconv.FormatInt(j.id, 10))
+	os.RemoveAll(ws)
+	if err := os.MkdirAll(ws, 0o700); err != nil {
+		return err
+	}
+	defer os.RemoveAll(ws)
+
+	// 2. Download and verify.
+	sumsPath := filepath.Join(ws, artifact.ChecksumsName)
+	if err := api.Download(ctx, cfg.Repo, sumsAsset.ID, sumsPath, maxChecksums); err != nil {
+		return err
+	}
+	sums, err := os.ReadFile(sumsPath)
 	if err != nil {
 		return err
 	}
-	releaseID := time.Now().UTC().Format("20060102-150405") + "-" + co.SHA[:7]
-	d.setRelease(j.id, releaseID, co.SHA)
-	lg.Writef("commit %s %q -> release %s", co.SHA[:12], co.Subject, releaseID)
-
-	// 2. dootd.toml.
-	appRoot := ws
-	m, err := manifest.Load(appRoot, cfg.Base.Type)
+	want, err := artifact.Checksum(sums, assetName)
 	if err != nil {
 		return err
 	}
-	lg.Writef("dootd.toml: zig %s, build %q, run %q, health %s", m.ZigVersion, m.Build, strings.Join(m.Run, " "), m.HealthPath)
-
-	// 3. Pinned toolchain.
-	zigDir, err := d.Zig.Ensure(ctx, m.ZigVersion, func(s string) { lg.Writef("%s", s) })
+	lg.Writef("downloading %s (%.1f MB)", assetName, float64(asset.Size)/(1<<20))
+	tarPath := filepath.Join(ws, assetName)
+	if err := api.Download(ctx, cfg.Repo, asset.ID, tarPath, maxAsset); err != nil {
+		return err
+	}
+	got, err := artifact.FileSHA256(tarPath)
 	if err != nil {
 		return err
 	}
+	if got != want {
+		return fmt.Errorf("checksum mismatch for %s: %s says %s, the download is %s; nothing was changed", assetName, artifact.ChecksumsName, want, got)
+	}
+	lg.Writef("sha256 %s matches %s", got[:16], artifact.ChecksumsName)
 
-	// 4. Build as the app user in its build cgroup.
-	err = d.Builder.Run(ctx, builder.Job{
-		App: name, User: u, Workspace: ws, Command: m.Build, ZigDir: zigDir,
-		Env: cfg.Base.Env, MemoryMax: cfg.BuildMemory, Timeout: cfg.BuildTimeout, Log: lg,
-	})
+	// 3. Unpack and check.
+	dir := filepath.Join(ws, "release")
+	if err := artifact.Unpack(tarPath, dir, artifact.MaxUnpacked); err != nil {
+		return fmt.Errorf("unpack %s: %w", assetName, err)
+	}
+	m, err := manifest.Load(dir)
 	if err != nil {
 		return err
 	}
-	if err := builder.Finalize(ws, u); err != nil {
-		return fmt.Errorf("finalize release: %w", err)
-	}
-	if err := builder.CheckBinary(appRoot, m.Run[0]); err != nil {
+	if err := artifact.CheckBinary(dir, m.Run[0], runtime.GOARCH); err != nil {
 		return err
 	}
+	lg.Writef("dootd.toml: run %q, health %s", strings.Join(m.Run, " "), m.HealthPath)
 
-	// 5. Keep it as an immutable release.
-	relDir := d.Layout.ReleaseDir(name, releaseID)
-	if err := os.Rename(ws, relDir); err != nil {
+	// 4. Keep it as an immutable release (root-owned, read-only to the app).
+	relDir := d.Layout.ReleaseDir(name, tag)
+	os.RemoveAll(relDir) // a stray directory from an interrupted deploy
+	if err := os.Rename(dir, relDir); err != nil {
 		return fmt.Errorf("store release: %w", err)
 	}
-	if err := os.Chmod(relDir, 0o755); err != nil {
-		return err
+	subject := rel.Name
+	if subject == "" {
+		subject = tag
 	}
-	rel := Release{
-		App: name, ID: releaseID, GitSHA: co.SHA, Subject: co.Subject, Branch: cfg.Branch,
-		ZigVersion: m.ZigVersion, Run: m.Run, HealthPath: m.HealthPath, CreatedAt: time.Now(),
-	}
-	if err := d.insertRelease(ctx, rel); err != nil {
+	kept := Release{App: name, ID: tag, Subject: subject, SHA256: got, Run: m.Run, HealthPath: m.HealthPath, CreatedAt: time.Now()}
+	if err := d.insertRelease(ctx, kept); err != nil {
 		os.RemoveAll(relDir)
 		return fmt.Errorf("record release: %w", err)
 	}
 
-	// 6-8. Switch with health check; roll back on failure.
-	if err := d.activate(ctx, cfg, rel, j.id, lg); err != nil {
-		d.removeRelease(name, releaseID, lg)
+	// 5-9. Switch with health check; roll back on failure.
+	if err := d.activate(ctx, cfg, kept, j.id, lg); err != nil {
+		d.removeRelease(name, tag, lg)
 		return err
 	}
 	d.pruneReleases(name, lg)
@@ -414,7 +510,7 @@ func (d *Deployer) rollback(ctx context.Context, cfg AppConfig, j job, lg *logs.
 	if err != nil {
 		return err
 	}
-	d.setRelease(j.id, rel.ID, rel.GitSHA)
+	d.setRelease(j.id, rel.ID, "")
 	return d.activate(ctx, cfg, rel, j.id, lg)
 }
 

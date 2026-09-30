@@ -12,16 +12,7 @@ import (
 
 // ContractVersion is the app contract version dootd implements
 // (docs/app-contract.md).
-const ContractVersion = 1
-
-// Type is the app language type; it only selects default build commands.
-type Type string
-
-// Supported app types.
-const (
-	TypeZig Type = "zig"
-	TypeC   Type = "c"
-)
+const ContractVersion = 2
 
 // Default resource limits (docs/app-contract.md §8).
 const (
@@ -42,7 +33,6 @@ type Limits struct {
 // Spec is everything the supervisor needs to run one app.
 type Spec struct {
 	Name       string
-	Type       Type
 	Domain     string // informational until Phase 3
 	Port       int
 	ReleaseID  string
@@ -103,9 +93,6 @@ func (s *Spec) Validate() error {
 	var errs []error
 	if err := ValidateName(s.Name); err != nil {
 		errs = append(errs, err)
-	}
-	if s.Type != TypeZig && s.Type != TypeC {
-		errs = append(errs, fmt.Errorf("app %q: type must be \"zig\" or \"c\", got %q", s.Name, s.Type))
 	}
 	if s.Port < 1024 || s.Port > 65535 {
 		errs = append(errs, fmt.Errorf("app %q: port %d out of range 1024-65535", s.Name, s.Port))

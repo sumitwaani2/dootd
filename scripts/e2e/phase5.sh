@@ -81,12 +81,15 @@ check "home no longer warns about the bucket" wait_for 10 page_lacks / "No S3 bu
 check "dootd's own database is not backed up" test -z "$(ls -A "$S3DIR/$BUCKET")"
 
 say "Create and deploy the app (no databases yet)"
-mkrepo web examples/sample-c
+check "sample-c's release workflow" sample_dist sample-c
+DIST="$E2E/dist-sample-c"
+mkrepo web
+publish web v1 "$DIST"
 check "Add app offers backup folders now" page_has /apps/new "Start with data from"
 create_app web --data domain=$APP_HOST --data memory=128M --data restore_from=@auto >/dev/null
 check "no folder with its name yet: starts empty" flash_has "App web created." /apps/web
 wait_for 30 test -f "$DATA_ROOT/certs/$APP_HOST/cert.pem"
-check "first deploy succeeds" deploy_is succeeded web
+check "first deploy succeeds" deploy_is succeeded web v1
 check "pre-deploy step notes there is nothing to back up yet" last_has 'no SQLite databases in DATA_DIR yet'
 for _ in $(seq 1 5); do site "$APP_HOST" / >/dev/null; done
 check "app counts visits in SQLite" test "$(visits)" = 6
@@ -104,10 +107,9 @@ echo "  backup #$BACKUP1 holds $((SAVED - 1)) visits"
 check "uploaded archive passes integrity_check" integrity "$(objects web | tail -n1)"
 
 say "Pre-deploy backup"
-set_title web "web v2"
-commit web "v2"
-check "second deploy succeeds" deploy_is succeeded web
-check "build log shows the pre-deploy backup" grep -qE 'backup #[0-9]+: 1 database' "$LAST"
+publish web v2 "$DIST"
+check "second deploy succeeds" deploy_is succeeded web v2
+check "deploy log shows the pre-deploy backup" grep -qE 'backup #[0-9]+: 1 database' "$LAST"
 check "pre-deploy backup uploaded" wait_for 30 any_is pre-deploy
 check "data survived the deploy" test "$(visits)" -gt "$SAVED"
 
@@ -185,19 +187,20 @@ check "Add app lists the folder" page_has /apps/new ">backup folder web/ (newest
 create_app web --data domain=$APP_HOST --data memory=128M --data restore_from=@auto >/dev/null
 check "restored from its folder when created" flash_has "Its data was restored from the newest backup in web/ (app.db)" /apps/web
 check "restored database belongs to the new app user" test "$(stat -c %U "$DATA_ROOT/apps/web/data/app.db")" = dootd-web
-check "first deploy succeeds" deploy_is succeeded web
+check "first deploy succeeds" deploy_is succeeded web v2
 check "visits continue from the backup" test "$(visits)" = "$SAVED"
 
 say "A renamed repository picks the old folder"
-mkrepo blog examples/sample-c
+mkrepo blog
+publish blog v1 "$DIST"
 create_app blog --data memory=128M --data restore_from=web >/dev/null
 check "restored from the chosen folder" flash_has "restored from the newest backup in web/" /apps/blog
 check "blog has the database" test "$(stat -c %U "$DATA_ROOT/apps/blog/data/app.db")" = dootd-blog
-check "deploy blog" deploy_is succeeded blog
+check "deploy blog" deploy_is succeeded blog v1
 backup_now_blog() { post /apps/blog/backup >/dev/null; }
 backup_now_blog
 check "blog's own backups go to its own folder" has_objects blog 1
-mkrepo empty examples/sample-c
+mkrepo empty
 create_app empty --data memory=128M --data restore_from= >/dev/null
 check "'nothing' starts empty" test -z "$(ls -A "$DATA_ROOT/apps/empty/data")"
 

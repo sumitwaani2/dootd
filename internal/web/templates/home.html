@@ -19,7 +19,7 @@
     <tbody>
     {{range .Data.Apps}}
     <tr>
-      <td><a href="/apps/{{.Name}}"><b>{{.Name}}</b></a> <small class="muted">{{.Type}}</small></td>
+      <td><a href="/apps/{{.Name}}"><b>{{.Name}}</b></a></td>
       <td>{{template "state" .Status.State}}{{if .Pending}} <a class="badge s-deploying" href="/deployments/{{.Pending}}">deploying</a>{{end}}{{if .NeedsRestart}} <span class="badge s-backoff">restart needed</span>{{end}}</td>
       <td>{{if .Domain}}<a href="https://{{.Domain}}/" rel="noopener" target="_blank">{{.Domain}}</a>{{else}}<span class="muted">-</span>{{end}}</td>
       <td><code>{{if .Status.Release}}{{.Status.Release}}{{else}}-{{end}}</code></td>

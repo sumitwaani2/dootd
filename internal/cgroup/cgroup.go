@@ -2,12 +2,11 @@
 //
 // Under systemd with Delegate=yes dootd owns its service cgroup. Because
 // cgroup v2 forbids processes in non-leaf groups ("no internal processes"),
-// dootd first moves itself into a leaf and then builds this tree:
+// dootd first moves itself into a leaf and then creates this tree:
 //
 //	<root>/                 dootd.service (delegated)
 //	  supervisor/           dootd itself
 //	  apps/<app>/           app runtime processes
-//	  builds/<app>/         build processes
 package cgroup
 
 import (
@@ -35,8 +34,7 @@ type Kind string
 
 // Group kinds.
 const (
-	Apps   Kind = "apps"
-	Builds Kind = "builds"
+	Apps Kind = "apps"
 )
 
 // wantedControllers are enabled wherever the kernel offers them.
@@ -78,11 +76,11 @@ func Setup(rootOverride string) (*Manager, error) {
 		return nil, fmt.Errorf("cgroup: move dootd into %s: %w", sup, err)
 	}
 
-	// 2. Enable controllers at the root, then in apps/ and builds/.
+	// 2. Enable controllers at the root, then in apps/.
 	if err := m.enableControllers(m.root); err != nil {
 		return nil, err
 	}
-	for _, k := range []Kind{Apps, Builds} {
+	for _, k := range []Kind{Apps} {
 		dir := filepath.Join(m.root, string(k))
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, fmt.Errorf("cgroup: create %s: %w", dir, err)
@@ -169,11 +167,11 @@ func (m *Manager) Group(kind Kind, name string) (*Group, error) {
 	return &Group{Path: dir, controllers: m.controllers}, nil
 }
 
-// ReapStale kills processes left in any app or build group, e.g. after a
+// ReapStale kills processes left in any app group, e.g. after a
 // dootd crash in a dev setup. It returns the names of groups it cleaned.
 func (m *Manager) ReapStale(ctx context.Context) ([]string, error) {
 	var cleaned []string
-	for _, k := range []Kind{Apps, Builds} {
+	for _, k := range []Kind{Apps} {
 		entries, err := os.ReadDir(filepath.Join(m.root, string(k)))
 		if err != nil {
 			return cleaned, fmt.Errorf("cgroup: %w", err)

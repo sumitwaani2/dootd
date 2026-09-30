@@ -2,14 +2,15 @@
 
 These are the rules a Zig or C app must follow to be hosted on dootd. Follow them and the app deploys with one click.
 
-Contract version: **1**
+Contract version: **2**. Version 1 had dootd build apps on the server; since version 2 the app's own GitHub Actions workflow builds and tests it, and dootd only deploys the result (architecture D38).
 
 ---
 
 ## 1. Summary checklist
 
-- [ ] Repo has a `dootd.toml` at the root, with an exact `zig_version`. The repo name becomes the app name (e.g. `my_blog` → `my-blog`).
-- [ ] `build` produces a runnable binary, and `run` points to it.
+- [ ] The repo has a `dootd.toml` at the root with `contract = 2` and `run`. The repo name becomes the app name (e.g. `my_blog` → `my-blog`).
+- [ ] The repo has the release workflow (`.github/workflows/release.yml`, copied from a sample, §2.2). Pushing a `v*` tag tests, builds and publishes a GitHub release.
+- [ ] The release tarball holds everything the app needs at runtime: the binary and any templates or static files.
 - [ ] The app serves plain HTTP on **`127.0.0.1:$PORT`**. No TLS.
 - [ ] All SQLite files live in **`$DATA_DIR`**, and nothing else is written anywhere except `$TMPDIR`.
 - [ ] `GET <health_path>` returns 2xx once the app is ready.
@@ -19,53 +20,58 @@ Contract version: **1**
 
 ---
 
-## 2. `dootd.toml`
+## 2. Releases
 
-Put this file at the repo root. It describes how to **build and run** the app. Operational settings such as the domain, env vars and resource limits are set in the dashboard, not here.
+### 2.1 `dootd.toml`
 
-### Zig app
-
-```toml
-contract    = 1
-zig_version = "0.14.1"                             # required, exact version
-build       = "zig build -Doptimize=ReleaseSafe"   # optional, this is the default for type=zig
-run         = "zig-out/bin/myapp"                  # required, relative to repo root
-health_path = "/healthz"                           # optional, default "/"
-```
-
-### C app
+It says how to **run** the app, and it travels inside every release tarball. Operational settings (domain, env vars, resource limits) are set in the dashboard.
 
 ```toml
-contract    = 1
-zig_version = "0.14.1"             # required: C is compiled with `zig cc` from this pinned Zig
-build       = "make"               # optional, this is the default for type=c
-run         = "build/myapp --foo"  # required
-health_path = "/healthz"
+contract    = 2
+run         = "zig-out/bin/myapp"   # required: binary + arguments, relative to the tarball root
+health_path = "/healthz"            # optional, default "/"
 ```
 
 | Field | Required | Default | Notes |
 |---|---|---|---|
-| `contract` | yes | — | Always `1` for now. |
-| `zig_version` | yes | — | Exact release, for example `0.14.1`. dootd downloads it, verifies its checksum and caches it. The deploy fails if this version doesn't exist. |
-| `build` | no | `zig build -Doptimize=ReleaseSafe` (zig) / `make` (c) | Runs with `/bin/sh -c` from the app root, so `&&` and `;` work. |
-| `run` | yes | — | Binary path plus arguments. It is **not run through a shell**, so pipes, `&&` and `$VAR` expansion don't work. |
+| `contract` | yes | — | `2`. |
+| `run` | yes | — | Binary path plus arguments. It is **not run through a shell**, so pipes, `&&` and `$VAR` expansion don't work. The binary must be a Linux ELF executable for the server's CPU. |
 | `health_path` | no | `/` | Must return 2xx or 3xx within 30 s of start. |
 
-The app type (`zig` or `c`) is chosen in the dashboard. It only changes the default `build` command.
+Unknown keys are rejected, so typos fail the deploy instead of being ignored (`zig_version` and `build` from contract 1 included).
 
-**One repo, one app.** `dootd.toml` sits at the repo root, and the build, `run` and the app's working directory are relative to it. The app's name in dootd (and in `DOOTD_APP`, the Linux user `dootd-<name>` and its backup folder) is the repository name, lowercased, with `_` and `.` turned into `-`; it must then be 2–24 characters of `a–z`, `0–9` and `-`, starting with a letter. Unknown keys in `dootd.toml` are rejected, so typos fail the deploy instead of being ignored.
+### 2.2 The release workflow
 
-### Build environment
+Copy the workflow of the matching sample into your repo as `.github/workflows/release.yml`:
 
-- The pinned `zig` is first on `PATH`.
-- `CC="zig cc"` and `CXX="zig c++"` are set, so plain Makefiles compile with Zig's toolchain.
-- `make` is available on the host. **No other system libraries are installed.** If you need something like sqlite, add it as source (for example the sqlite amalgamation `sqlite3.c`) or as a Zig package dependency in `build.zig.zon`.
-- Outbound network is allowed during the build, so `zig build` can fetch dependencies from `build.zig.zon`.
-- Default build limits are **1 GB RAM** and a **15 minute** timeout. Both can be changed per app in the dashboard. Builds get no swap. Compiling the sqlite amalgamation with `ReleaseSafe` (as `examples/sample-zig` does) needs about 2 GB, so raise *Build memory* for such apps.
-- Your env vars are **also available during the build**.
-- The build runs as the app's own user (`dootd-<app>`). `HOME`, `TMPDIR`, `ZIG_GLOBAL_CACHE_DIR` and `ZIG_LOCAL_CACHE_DIR` point to a per-app cache that survives between deploys, so rebuilds (including `zig cc` C compiles and `build.zig.zon` packages) are fast. `DOOTD_BUILD=1` is set.
-- The checkout is shallow (depth 1) and `.git` is removed, so the build can't read git history or run `git describe`.
-- After the build, the whole tree becomes root-owned and read-only for the app. Anything the app must write at runtime goes in `$DATA_DIR` or `$TMPDIR`.
+| Language | Workflow |
+|---|---|
+| Zig | [`examples/sample-zig/.github/workflows/release.yml`](../examples/sample-zig/.github/workflows/release.yml) |
+| C (compiled with `zig cc`) | [`examples/sample-c/.github/workflows/release.yml`](../examples/sample-c/.github/workflows/release.yml) |
+
+Edit the `env:` block at its top:
+
+| Variable | Meaning | Zig example | C example |
+|---|---|---|---|
+| `ZIG_VERSION` | The Zig release that builds the app (C too, via `zig cc`) | `0.16.0` | `0.16.0` |
+| `TEST` | Your tests; they run first, and a failure publishes nothing | `zig build test` | `make test CC="zig cc"` |
+| `CLEAN` | Removes the previous architecture's build output | `rm -rf zig-out` | `rm -rf build` |
+| `BUILD` | Builds for `$TARGET` (`x86_64-linux-musl`, then `aarch64-linux-musl`) | `zig build -Doptimize=ReleaseSafe -Dtarget=$TARGET` | `make CC="zig cc -target $TARGET"` |
+| `FILES` | What goes into the tarball next to `dootd.toml` (paths kept) | `zig-out/bin/myapp templates static` | `build/myapp static` |
+
+Then release with:
+
+```bash
+git tag v1.0.0 && git push origin v1.0.0
+```
+
+The workflow runs `TEST`, builds both architectures, packages `app-linux-amd64.tar.gz` and `app-linux-arm64.tar.gz`, writes `checksums.txt`, starts the amd64 package exactly as dootd would (`HOST`, `PORT`, `DATA_DIR`, `TMPDIR`) and waits for `health_path`, and only then publishes the GitHub release. Nothing is deployed yet: the release appears in the app's **Deploy** menu in dootd, and you pick when.
+
+- Tags must match `v*` and use only letters, digits, `.`, `_` and `-` (e.g. `v1.4.0`, `v1.4.0-rc1`); the tag becomes `DOOTD_RELEASE`.
+- `musl` targets give static binaries, so they don't depend on the server's libc. If you need something like sqlite, compile it in from source (the sqlite amalgamation `sqlite3.c`, or a `build.zig.zon` dependency), as both samples do.
+- Builds run on GitHub's runners (at least 7 GB RAM), never on your server. The free tier's 2,000 minutes a month on private repos is plenty; a sample release takes a few minutes.
+- Private repos work: dootd downloads assets with the GitHub token from its settings (*Contents: Read-only*).
+- The tarball is unpacked read-only (owned by root). Anything the app writes goes in `$DATA_DIR` or `$TMPDIR`.
 
 ---
 
@@ -79,10 +85,10 @@ The app type (`zig` or `c`) is chosen in the dashboard. It only changes the defa
 | `TMPDIR` | `/var/lib/dootd/apps/blog/tmp` | Scratch space that may be wiped on every deploy. |
 | `DOOTD_APP` | `blog` | The app's name (from the repository name). |
 | `DOOTD_DOMAIN` | `blog.example.com` | The public domain. |
-| `DOOTD_RELEASE` | `20260927-141500-a1b2c3d` | The deployed release ID (timestamp + git SHA). |
-| `DOOTD_CONTRACT` | `1` | The contract version. |
+| `DOOTD_RELEASE` | `v1.4.0` | The deployed release (its tag). |
+| `DOOTD_CONTRACT` | `2` | The contract version. |
 
-Your own env vars from the dashboard are added on top. Names starting with `DOOTD_`, and the names in the table above, are reserved. Changing env vars requires a **Restart**, but not a rebuild.
+Your own env vars from the dashboard are added on top. Names starting with `DOOTD_`, and the names in the table above, are reserved. Changing env vars requires a **Restart**, not a new release.
 
 ---
 
@@ -105,12 +111,12 @@ Your own env vars from the dashboard are added on top. Names starting with `DOOT
 
 | Path | Access | Survives deploy? | Backed up? |
 |---|---|---|---|
-| Release dir (current working dir) | read-only | replaced | no |
+| Release dir (the unpacked tarball, current working dir) | read-only | replaced | no |
 | `$DATA_DIR` | read/write | ✅ yes | ✅ SQLite files |
 | `$TMPDIR` | read/write | ❌ may be wiped | no |
 | Everything else | no access | — | — |
 
-- Static files and templates in your repo can be read with relative paths, because the working directory is the release dir.
+- Static files and templates in the tarball can be read with relative paths, because the working directory is the release dir. List them in `FILES` (§2.2).
 - **Only SQLite databases in `$DATA_DIR` are backed up** (sub-folders included). dootd finds them by their file header, whatever their name. Other files in `$DATA_DIR`, such as user uploads, are kept across deploys but **not** backed up in v1.
 - Don't create folders named `.pre-restore-*` in `$DATA_DIR`: dootd uses them to keep the previous databases after a restore.
 
@@ -184,7 +190,7 @@ static void on_term(int s) { (void)s; stop = 1; }
 
 ### Zig
 
-The std API changes between Zig versions, so check the docs for **your pinned version**. In 0.14 / 0.15 it looks roughly like this:
+The std API changes between Zig versions, so check the docs for **your `ZIG_VERSION`**. In 0.14 / 0.15 it looks roughly like this:
 
 ```zig
 const port_str = try std.process.getEnvVarOwned(allocator, "PORT");
@@ -198,10 +204,11 @@ const data_dir = try std.process.getEnvVarOwned(allocator, "DATA_DIR");
 
 ```
 myapp/
+├── .github/workflows/release.yml   # copied from a sample (§2.2)
 ├── dootd.toml
 ├── build.zig
 ├── build.zig.zon
 ├── src/main.zig
-├── templates/     # read at runtime via relative path
+├── templates/     # in FILES; read at runtime via relative path
 └── static/
 ```

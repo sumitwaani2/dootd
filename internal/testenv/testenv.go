@@ -13,6 +13,9 @@ import (
 // CloudflareAPI is the Cloudflare API base URL override ("" = the real API).
 func CloudflareAPI() string { return os.Getenv("DOOTD_TEST_CLOUDFLARE_API") }
 
+// GitHubAPI is the GitHub API base URL override ("" = the real API).
+func GitHubAPI() string { return os.Getenv("DOOTD_TEST_GITHUB_API") }
+
 // PublicIPv4 skips IPv4 detection when set.
 func PublicIPv4() string { return os.Getenv("DOOTD_TEST_PUBLIC_IPV4") }
 

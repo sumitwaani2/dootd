@@ -49,7 +49,11 @@ fn openDb(data_dir: []const u8) void {
         log("DATA_DIR too long", .{});
         std.process.exit(1);
     };
-    if (c.sqlite3_open(path.ptr, &db) != c.SQLITE_OK) {
+    openPath(path);
+}
+
+fn openPath(path: [*:0]const u8) void {
+    if (c.sqlite3_open(path, &db) != c.SQLITE_OK) {
         log("sqlite open {s}: {s}", .{ path, c.sqlite3_errmsg(db) });
         std.process.exit(1);
     }
@@ -166,4 +170,11 @@ pub fn main(init: std.process.Init) !void {
     log("SIGTERM received, shutting down", .{});
     _ = libc.close(ls);
     _ = c.sqlite3_close(db);
+}
+
+test "visits are counted in SQLite" {
+    openPath(":memory:");
+    defer _ = c.sqlite3_close(db);
+    try std.testing.expectEqual(@as(i64, 1), recordVisit());
+    try std.testing.expectEqual(@as(i64, 2), recordVisit());
 }

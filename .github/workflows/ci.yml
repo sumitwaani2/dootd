@@ -41,3 +41,18 @@ jobs:
       - name: Smoke test (amd64)
         if: matrix.goarch == 'amd64'
         run: ./dist/dootd-linux-amd64 version
+
+  # The samples' release workflows are what app repos copy: run them (test,
+  # build amd64 + arm64, package, smoke test) on every PR, without publishing.
+  sample-release:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        app: [sample-zig, sample-c]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run examples/${{ matrix.app }}/.github/workflows/release.yml
+        run: |
+          python3 -c 'import yaml' 2>/dev/null || pip install pyyaml
+          python3 scripts/release-workflow.py examples/${{ matrix.app }}
+          ls -la examples/${{ matrix.app }}/dist

@@ -71,17 +71,11 @@ func (l Layout) LogsDir(app string) string { return filepath.Join(l.AppDir(app),
 // AppLog is the active runtime log file.
 func (l Layout) AppLog(app string) string { return filepath.Join(l.LogsDir(app), "app.log") }
 
-// BuildLogsDir holds per-release build logs.
+// BuildLogsDir holds the per-deployment logs.
 func (l Layout) BuildLogsDir(app string) string { return filepath.Join(l.LogsDir(app), "builds") }
 
-// ZigCacheDir is the app's persistent Zig cache root (global/, local/, home/).
-func (l Layout) ZigCacheDir(app string) string { return filepath.Join(l.Root, "cache", "zig", app) }
-
-// ToolchainsDir holds the shared Zig toolchains.
-func (l Layout) ToolchainsDir() string { return filepath.Join(l.Root, "toolchains", "zig") }
-
-// BuildsDir is <root>/builds/<app>, holding temporary build workspaces.
-func (l Layout) BuildsDir(app string) string { return filepath.Join(l.Root, "builds", app) }
+// DownloadsDir is <root>/downloads/<app>: temporary release downloads.
+func (l Layout) DownloadsDir(app string) string { return filepath.Join(l.Root, "downloads", app) }
 
 // BuildLog is the log file of one deployment.
 func (l Layout) BuildLog(app string, deployID int64) string {
@@ -103,13 +97,8 @@ func (l Layout) appDirs(app string) []dir {
 		{l.TmpDir(app), 0o700, true},
 		{l.LogsDir(app), 0o700, false},
 		{l.BuildLogsDir(app), 0o700, false},
-		{filepath.Join(l.Root, "cache"), 0o711, false},
-		{filepath.Join(l.Root, "cache", "zig"), 0o711, false},
-		{l.ZigCacheDir(app), 0o700, true},
-		{filepath.Join(l.Root, "toolchains"), 0o755, false},
-		{l.ToolchainsDir(), 0o755, false},
-		{filepath.Join(l.Root, "builds"), 0o711, false},
-		{l.BuildsDir(app), 0o711, false},
+		{filepath.Join(l.Root, "downloads"), 0o700, false},
+		{l.DownloadsDir(app), 0o700, false},
 	}
 }
 

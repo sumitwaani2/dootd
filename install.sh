@@ -3,12 +3,12 @@
 #
 #   curl -fsSL https://github.com/sumitwaani2/dootd/releases/latest/download/install.sh | sudo bash
 #
-# It asks nothing (docs/architecture.md §8):
+# It asks nothing and installs no system packages; nothing is ever built on
+# the server (docs/architecture.md §8, §11):
 #   1. checks the host (Ubuntu 24.04+, systemd, cgroup v2, x86_64/aarch64)
 #   2. downloads dootd-linux-<arch>, verifies it against checksums.txt
 #      (nothing is changed on a mismatch)
-#   3. installs `make` if missing and a 2 GB swapfile if there is no swap
-#   4. stops dootd if it runs, installs the binary, and runs `dootd setup-host`:
+#   3. stops dootd if it runs, installs the binary, and runs `dootd setup-host`:
 #      directories, master key, systemd unit, a new one-time password, start,
 #      and prints the address to open
 #
@@ -23,7 +23,6 @@ set -euo pipefail
 REPO="sumitwaani2/dootd"
 INSTALL_PATH="/usr/local/bin/dootd"
 MIN_UBUNTU="24.04"
-SWAPFILE="/swapfile"
 
 say()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 note() { printf '    %s\n' "$*"; }
@@ -96,36 +95,9 @@ install_binary() {
   say "Installed: ${NEW_VERSION}"
 }
 
-install_make() {
-  if command -v make >/dev/null; then
-    return
-  fi
-  say "Installing make (used by C app builds)"
-  DEBIAN_FRONTEND=noninteractive apt-get update -qq
-  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq make >/dev/null
-}
-
-ensure_swap() {
-  if [ -n "$(swapon --noheadings --show 2>/dev/null)" ]; then
-    return
-  fi
-  if [ -e "$SWAPFILE" ]; then
-    note "swap: ${SWAPFILE} exists but is not in use; leaving it alone"
-    return
-  fi
-  say "Creating a 2 GB swapfile at ${SWAPFILE} (Zig builds can use a lot of memory)"
-  fallocate -l 2G "$SWAPFILE" 2>/dev/null || dd if=/dev/zero of="$SWAPFILE" bs=1M count=2048 status=none
-  chmod 0600 "$SWAPFILE"
-  mkswap -q "$SWAPFILE" >/dev/null
-  swapon "$SWAPFILE"
-  grep -qE "^${SWAPFILE}\s" /etc/fstab || echo "${SWAPFILE} none swap sw 0 0" >> /etc/fstab
-}
-
 main() {
   check_host
   download
-  install_make
-  ensure_swap
   install_binary
   "$INSTALL_PATH" setup-host
 }

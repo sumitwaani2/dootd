@@ -44,7 +44,7 @@ func (d *Deployer) Reserve(name, reason string) (func(), error) {
 }
 
 // UpdateConfig replaces an app's configuration. It applies to the next
-// build and the next (re)start; running processes are not touched.
+// deploy and the next (re)start; running processes are not touched.
 func (d *Deployer) UpdateConfig(cfg AppConfig) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -188,7 +188,7 @@ func (d *Deployer) NeedsRestart(name string) bool {
 	return !maps.Equal(sp.Env, cfg.Base.Env) || sp.Limits != cfg.Base.Limits || sp.Domain != cfg.Base.Domain
 }
 
-// PurgeFiles removes an app's releases, logs, build workspaces and caches.
+// PurgeFiles removes an app's releases, logs and download workspaces.
 // If keepData is false DATA_DIR is removed too; otherwise it is moved to
 // <root>/deleted/<app>-<unix>/data and its path returned.
 func (d *Deployer) PurgeFiles(name string, keepData bool, stamp int64) (string, error) {
@@ -214,7 +214,7 @@ func (d *Deployer) PurgeFiles(name string, keepData bool, stamp int64) (string, 
 		}
 	}
 	var errs []error
-	for _, p := range []string{d.Layout.AppDir(name), d.Layout.ZigCacheDir(name), d.Layout.BuildsDir(name)} {
+	for _, p := range []string{d.Layout.AppDir(name), d.Layout.DownloadsDir(name)} {
 		if err := os.RemoveAll(p); err != nil {
 			errs = append(errs, err)
 		}

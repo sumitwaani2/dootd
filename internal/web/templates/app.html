@@ -6,7 +6,6 @@
   <div class="row">
     <h1>{{.Name}} {{template "state" .Status.State}}</h1>
     <div class="actions">
-      <form method="post" action="/apps/{{.Name}}/deploy" class="inline">{{template "csrf" $csrf}}<button class="primary" {{if .Pending}}disabled{{end}}>Deploy</button></form>
       {{if eq .Status.State "stopped" "crashed"}}
       <form method="post" action="/apps/{{.Name}}/start" class="inline">{{template "csrf" $csrf}}<button>Start</button></form>
       {{else}}
@@ -23,7 +22,7 @@
     <dt>Domain</dt><dd>{{if .Domain}}<a href="https://{{.Domain}}/" target="_blank" rel="noopener">{{.Domain}}</a>{{else}}-{{end}}
       {{with $.Data.EdgeHost}}<small class="muted">· DNS {{.DNS}} · certificate until {{date .CertUntil}}</small>{{if .Error}}<br><span class="error-text">{{.Error}}</span>{{end}}{{end}}</dd>
     <dt>Release</dt><dd><code>{{if .Status.Release}}{{.Status.Release}}{{else}}not deployed yet{{end}}</code></dd>
-    <dt>Source</dt><dd>{{.Repo}} <code>{{.Branch}}</code></dd>
+    <dt>Repository</dt><dd><a href="{{.Repo}}/releases" target="_blank" rel="noopener">{{.Repo}}</a></dd>
     <dt>Process</dt><dd>{{if .Status.PID}}pid {{.Status.PID}}, healthy {{ago .Status.HealthyAt}}{{else}}-{{end}} · port {{.Port}}</dd>
     <dt>Usage</dt><dd>{{bytes .MemBytes}} of {{bytes .Limits.MemoryMax}} · {{.Requests}} requests{{if .Requests5xx}} ({{.Requests5xx}} 5xx){{end}}</dd>
     <dt>Restarts</dt><dd>{{.Status.Restarts}}{{if .Status.OOMKills}} · <span class="error-text">{{.Status.OOMKills}} out-of-memory kills</span>{{end}}{{with .Status.LastExit}} · last exit: {{.}}{{end}}</dd>
@@ -37,22 +36,41 @@
   <div class="charts" data-refresh="10" id="app-charts">{{range $.Data.Charts}}<figure><figcaption>{{.Title}}</figcaption><img src="{{.URL}}" alt="{{.Title}} chart" width="640" height="180"></figure>{{end}}</div>
 </section>
 
+<section class="card" id="deploy">
+  <h2>Deploy</h2>
+  {{with $.Data.GitHubReleases}}
+  <form method="post" action="/apps/{{$.Data.App.Name}}/deploy" class="row-form">
+    {{template "csrf" $csrf}}
+    <label>Release
+      <select name="tag">{{range $i, $r := .}}
+        <option value="{{$r.Tag}}" {{if eq $i 0}}selected{{end}}>{{$r.Tag}}{{if and $r.Name (ne $r.Name $r.Tag)}} — {{$r.Name}}{{end}}{{if eq $i 0}} (latest){{end}}{{if $r.Prerelease}} (pre-release){{end}} · {{date $r.PublishedAt}}</option>{{end}}
+      </select>
+    </label>
+    <button class="primary" {{if $.Data.App.Pending}}disabled{{end}}>Deploy</button>
+  </form>
+  <p class="muted">The 10 newest GitHub releases of {{$.Data.App.Repo}}. The chosen release is downloaded, checked against its checksums.txt and started; if it doesn't become healthy, the current one keeps running.</p>
+  {{else}}
+  {{with $.Data.GitHubErr}}<p class="error">Could not list the releases: {{.}}</p>{{else}}
+  <p class="muted">The repository has no releases yet. Add the release workflow (docs/app-contract.md §2) and push a tag: <code>git tag v1.0.0 &amp;&amp; git push origin v1.0.0</code>. The release shows up here a few minutes later.</p>{{end}}
+  {{end}}
+</section>
+
 <section class="card">
-  <h2>Releases</h2>
+  <h2>Kept releases</h2>
   {{with $.Data.Releases}}
   <table>
-    <thead><tr><th>Release</th><th>Commit</th><th>Zig</th><th>Built</th><th></th></tr></thead>
+    <thead><tr><th>Release</th><th>Name</th><th>SHA-256</th><th>Deployed</th><th></th></tr></thead>
     <tbody>{{range .}}
     <tr>
       <td><code>{{.ID}}</code>{{if .Current}} <span class="badge s-running">current</span>{{end}}</td>
-      <td><code>{{short .GitSHA}}</code> {{.Subject}}</td>
-      <td>{{.ZigVersion}}</td>
+      <td>{{.Subject}}</td>
+      <td><code>{{short .SHA256}}</code></td>
       <td>{{ago .CreatedAt}}</td>
       <td>{{if not .Current}}<form method="post" action="/apps/{{.App}}/rollback" class="inline" data-confirm="Switch to release {{.ID}}?">{{template "csrf" $csrf}}<input type="hidden" name="release" value="{{.ID}}"><button>Roll back</button></form>{{end}}</td>
     </tr>{{end}}
     </tbody>
   </table>
-  {{else}}<p class="muted">No releases yet. Press Deploy to build the branch.</p>{{end}}
+  {{else}}<p class="muted">None yet. The last 3 deployed releases are kept on the server for instant rollback.</p>{{end}}
 </section>
 
 <section class="card">
@@ -118,15 +136,12 @@
   <form method="post" action="/apps/{{$.Data.App.Name}}/settings" class="grid">
     {{template "csrf" $csrf}}
     <label class="wide">GitHub repository <input name="repo" value="{{.Repo}}" required><small>Must keep the name {{$.Data.App.Name}} (the app is named after it)</small></label>
-    <label>Branch <input name="branch" value="{{.Branch}}" required></label>
     <label class="wide">Domain <input name="domain" value="{{.Domain}}" placeholder="(none)"></label>
     <fieldset class="wide">
       <legend>Limits</legend>
       <label>Memory <input name="memory" value="{{.Memory}}" size="6"></label>
       <label>CPU cores <input name="cpu" value="{{.CPU}}" size="4"></label>
       <label>Processes <input name="pids" value="{{.Pids}}" size="5"></label>
-      <label>Build memory <input name="build_memory" value="{{.BuildMemory}}" size="6"></label>
-      <label>Build timeout <input name="build_timeout" value="{{.BuildTimeout}}" size="6"></label>
     </fieldset>
     <div class="wide"><button>Save settings</button></div>
   </form>

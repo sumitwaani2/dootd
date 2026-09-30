@@ -27,4 +27,8 @@ pub fn build(b: *std.Build) void {
 
     const exe = b.addExecutable(.{ .name = "sample-zig", .root_module = mod });
     b.installArtifact(exe);
+
+    // `zig build test`: run by the release workflow before building.
+    const tests = b.addTest(.{ .root_module = mod });
+    b.step("test", "Run the tests").dependOn(&b.addRunArtifact(tests).step);
 }

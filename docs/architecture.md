@@ -9,6 +9,7 @@ This is the long-term technical reference for maintaining dootd. The rules apps 
 - **One way to do each thing.** There is no admin CLI, no config file to edit and no optional feature that needs its own maintenance. dootd is an internal tool for one non-technical user: ease and correctness beat features.
 - It runs on a 1 GB VPS. Target: **< 30 MB RSS when idle**, and no background daemons other than dootd itself.
 - Zig/C server-rendered apps with SQLite as the only database.
+- **dootd never builds.** Apps are built, tested and packaged by GitHub Actions in their own repositories and published as GitHub Releases (§11). dootd deploys the release: download, verify, unpack, run.
 - Cloudflare in front, **Full (strict)** TLS, and the origin reachable **only** through Cloudflare.
 - SQLite backups to any S3-compatible storage, with **RPO ≤ 3 h**.
 
@@ -42,10 +43,10 @@ This is the long-term technical reference for maintaining dootd. The rules apps 
 | dootd's own DB | SQLite via `modernc.org/sqlite` (pure Go) | No CGO, same database technology as the apps |
 | Password hashing | `golang.org/x/crypto/argon2` (argon2id) | Current best practice |
 | Secret encryption | AES-256-GCM (stdlib) | Encrypts PAT, tokens and env vars at rest |
-| Git clone | `github.com/go-git/go-git/v5` | No dependency on the host `git` binary |
+| Release download | GitHub REST API (stdlib `net/http`) | Releases and assets, with the stored token for private repos |
 | S3 / R2 | `github.com/minio/minio-go/v7` | Small, works with any S3-compatible storage |
 | Compression | `github.com/klauspost/compress/zstd` | Fast, good compression ratio |
-| Zig tarballs (`.tar.xz`) | `github.com/ulikunitz/xz` | Pure Go |
+| Release tarballs (`.tar.gz`) | stdlib `archive/tar` + `compress/gzip` | No extra dependency |
 | Config parsing | `github.com/BurntSushi/toml` | For `dootd.toml` |
 | Dashboard UI | `html/template` + one CSS file + ~100 lines of plain JS (SSE, refresh), server-rendered SVG charts later, all embedded with `go:embed` | No Node or JS build step, very light |
 
@@ -60,9 +61,9 @@ Dependency rule: add new modules only when the stdlib would require more than ab
                     │        ├─ dashboard host ─► Web UI (auth, SSE)                                            │
                     │        └─ app host ───────► ReverseProxy ─► 127.0.0.1:$PORT ─────────► app process        │
                     │                                                                          (own uid,       │
-                    │ Deployer ─► Builder ─► Toolchain mgr (zig versions)                       own cgroup)     │
+                    │ Deployer ─► GitHub release download ─► verify + unpack                    own cgroup)     │
                     │ Supervisor (start/stop/restart/backoff, log capture)                                      │
-                    │ Cloudflare client (DNS, Origin CA, AOP, IP ranges)   GitHub client (PAT, clone)           │
+                    │ Cloudflare client (DNS, Origin CA, AOP, IP ranges)   GitHub client (PAT, releases)        │
                     │ Backup scheduler ─► snapshot (VACUUM INTO) ─► zstd ─► S3/R2                               │
                     │ Metrics collector (cgroup + /proc + proxy stats)                                          │
                     │ Store: /var/lib/dootd/dootd.db (SQLite)       Secrets: /etc/dootd/master.key              │
@@ -85,11 +86,10 @@ internal/
   hostinfo/           host summary from /proc and statfs
   edge/               listener, CF IP filter, setup access, certificates, AOP CA, TLS config, host router, proxy, request stats, Cloudflare sync, dashboard domain
   cloudflare/         minimal REST client (zones, DNS, origin CA, AOP, settings, IPs)
-  github/             PAT validation, repo listing, clone via go-git
-  toolchain/          zig download/verify/cache
-  builder/            build workspace, run build in cgroup, capture build log
+  github/             PAT validation, repo listing, releases and asset downloads
+  artifact/           release tarball verification and safe unpacking, ELF architecture check
   manifest/           dootd.toml parsing + validation
-  deployer/           deploy queue + pipeline, releases, rollback, history
+  deployer/           deploy queue + pipeline (download → verify → switch → health check), releases, rollback, history
   supervisor/         process lifecycle, restart policy, log capture
   cgroup/             cgroup v2 create/limit/read-stats, delegation setup
   users/              per-app system users
@@ -112,16 +112,14 @@ internal/
   setup/{cert.pem,key.pem}                self-signed certificate for the setup address (§8.1)
   certs/<hostname>/{cert.pem,key.pem}     Origin CA certs (0600)
   aop/{ca.pem,ca.key,client.pem,client.key}  dootd's private AOP CA + client cert
-  toolchains/zig/<version>/               extracted Zig releases (shared, read-only)
-  cache/zig/<app>/                        per-app zig global cache (owned by app user)
-  builds/<app>/<release-id>/              temporary build workspace
+  downloads/<app>/<deployment-id>/        temporary download + unpack workspace (emptied at startup)
   apps/<app>/
-    releases/<release-id>/                repo checkout + build outputs (root-owned, read-only to app)
-    current -> releases/<release-id>
+    releases/<tag>/                       unpacked release tarball (root-owned, read-only to app)
+    current -> releases/<tag>
     data/                                 DATA_DIR (0700, app user)
     tmp/                                  TMPDIR  (0700, app user)
     logs/app.log[.1..3]                   runtime logs (rotated)
-    logs/builds/<release-id>.log          build logs
+    logs/builds/<deployment-id>.log       deploy logs
   backups/staging/                        temporary snapshots and downloads (emptied at startup)
   backups/local/<app>/                    newest archives (<time>-<kind>-<id>.tar.zst)
   deleted/<app>-<time>/data/              data kept when an app is deleted
@@ -136,10 +134,10 @@ The last **3 releases** are kept for instant rollback. Older ones are deleted af
 | `settings` | key, value (plain or encrypted blob). Holds `dashboard_domain`, the one-time password hash and expiry (`setup_password`), GitHub PAT*, CF token*, S3 endpoint/region/bucket/keys*, Cloudflare IP ranges |
 | `users` | id (always 1), email, password_hash (argon2id) |
 | `sessions` | id_hash (SHA-256 of the token), csrf, created_at, last_seen, ip, user_agent, setup (1 = signed in with the one-time password) |
-| `apps` | name, type, repo, branch, domain (unique), port (unique), memory_max, cpu_max, pids_max, build_memory, build_timeout, created_at |
+| `apps` | name, repo, domain (unique), port (unique), memory_max, cpu_max, pids_max, created_at |
 | `app_env` | app, name, value* |
 | `deployments` | id, app, kind (deploy/rollback), status (queued/building/deploying/succeeded/failed), release_id, git_sha, error, created/started/finished_at |
-| `releases` | app, id, git_sha, subject, branch, zig_version, run (JSON argv), health_path, created_at (only kept releases) |
+| `releases` | app, id (the tag), subject (release name), sha256 (of the tarball), run (JSON argv), health_path, created_at (only kept releases) |
 | `app_state` | app, desired_state (running/stopped) |
 | `backups` | id, app, kind, status (running/ok/failed), object_key, local_path, size, sha256, files, release_id, error, created_at, finished_at |
 | `edge_certs` | hostname, zone_id, cf_cert_id, not_after, issued_at |
@@ -147,7 +145,7 @@ The last **3 releases** are kept for instant rollback. Older ones are deleted af
 | `metrics_1m` | scope (`_host`, `_dootd` or app), ts (minute), cpu, mem, mem_limit, swap, load1, disk_used, disk_total, pids, io_read, io_write, req, req_5xx (per minute), p50, p95 (ms, NULL = no requests), oom |
 | `schema_migrations` | version |
 
-`*` = encrypted with AES-256-GCM using `master.key`. `dootd.db` uses WAL mode, and dootd uses a single writer connection. (The unused `apps.path` and `releases.subdir` columns from the removed monorepo option stay empty.)
+`*` = encrypted with AES-256-GCM using `master.key`. `dootd.db` uses WAL mode, and dootd uses a single writer connection. (Columns of removed features stay in place, unused: `apps.type/branch/path/build_memory/build_timeout`, `releases.git_sha/branch/subdir/zig_version`.)
 
 ## 8. Install, first sign-in, updates
 
@@ -157,11 +155,10 @@ The whole SSH part is one command:
 curl -fsSL https://github.com/sumitwaani2/dootd/releases/latest/download/install.sh | sudo bash
 ```
 
-`install.sh` asks no questions. It:
+`install.sh` asks no questions and installs no system packages (nothing is built on the server). It:
 1. Checks Ubuntu ≥ 24.04, systemd, cgroup v2 and the CPU architecture, and changes nothing if one is missing.
 2. Downloads `dootd-linux-<arch>` and `checksums.txt` from the latest GitHub release, verifies the SHA-256 and checks that the binary runs (`dootd version`). On a mismatch nothing is installed.
-3. Installs `make` if it is missing (the only system package), and creates a 2 GB swapfile if the host has no swap (Zig builds can use a lot of memory).
-4. Stops dootd if it is running, moves the new binary into place and runs `dootd setup-host`, which:
+3. Stops dootd if it is running, moves the new binary into place and runs `dootd setup-host`, which:
    - creates `/etc/dootd` (0700) and `/var/lib/dootd` (0711) and generates `master.key` (never overwritten);
    - writes the systemd unit embedded in the binary (`contrib/systemd/dootd.service`) and enables it;
    - opens `dootd.db` (running migrations) and stores a **new one-time password** (argon2id hash, valid 24 h);
@@ -267,7 +264,6 @@ Because of `Delegate=yes`, dootd owns `/sys/fs/cgroup/system.slice/dootd.service
 dootd.service/
   supervisor/            dootd itself
   apps/<app>/            runtime: memory.max, memory.swap.max=0, memory.zswap.max=0, cpu.max, pids.max
-  builds/<app>/          build: memory.max=build_mem_max, cpu.weight=50 (builds yield to apps)
 ```
 
 - Processes start directly inside their cgroup using `SysProcAttr{CgroupFD, UseCgroupFD: true}` (clone3 `CLONE_INTO_CGROUP`), with `Credential{Uid,Gid}`, `Setpgid`, and `Pdeathsig: SIGKILL`.
@@ -287,53 +283,56 @@ dootd.service/
 ### 10.4 Logs
 - stdout and stderr go through pipes into `logs/app.log`. Each line gets a timestamp and stream tag, and files rotate at 10 MB with 3 kept.
 - There is also an in-memory ring buffer (last 1000 lines) per app. The dashboard streams live logs over **SSE** from this buffer.
-- Build logs are stored per release, and the last 20 per app are kept.
+- Deploy logs are stored per deployment, and the last 20 per app are kept.
 
-## 11. Build and deploy pipeline
+## 11. Releases and the deploy pipeline
 
-Only **one build runs at a time** across the whole server, so small VPSes aren't overloaded. A second deploy request waits in a queue, and the UI shows it as queued.
+dootd does not compile anything (D38). Each app repository carries a workflow (template: `examples/release.yml`) that, when a `v*` tag is pushed, runs the app's tests, builds static binaries with Zig for `x86_64-linux-musl` and `aarch64-linux-musl`, and publishes a GitHub release with:
+
+| Asset | Content |
+|---|---|
+| `app-linux-amd64.tar.gz`, `app-linux-arm64.tar.gz` | `dootd.toml` at the root, the binary named by `run`, and the files the app reads at runtime (templates, static) |
+| `checksums.txt` | `sha256sum` lines for both tarballs |
+
+A failing test or build publishes nothing. GitHub's free tier (2,000 minutes a month on private repos) covers hundreds of releases.
+
+Only **one deployment runs at a time** across the server; others wait in a queue and the UI shows them as queued.
 
 ```
-Deploy clicked
- 1-2. Shallow clone (depth 1, single branch) into builds/<app>/<deployment-id>/,
-      record the HEAD SHA, remove .git; release id = <UTC time>-<sha7>   [app keeps serving]
- 3. Parse + validate dootd.toml in the repo root
- 4. Ensure toolchain: toolchains/zig/<version>/ (download if missing)
- 5. Run `build` as app user, in builds/<app> cgroup, env = user env + PATH/CC/CXX,
-    cwd = workspace, timeout = build_timeout; stream log
- 6. Verify `run` binary exists and is executable
- 7. Move workspace → apps/<app>/releases/<release-id>/ (chown root, read-only)
+Deploy <tag> clicked (the app page lists the 10 newest releases, latest preselected)
+ 1. If releases/<tag>/ is still kept on the server: use it (steps 2–5 skipped)
+ 2. GitHub API: release by tag → asset app-linux-<arch>.tar.gz + checksums.txt   [app keeps serving]
+ 3. Download both (asset API, stored token, size limit), check the SHA-256
+ 4. Unpack into downloads/<app>/<id>/ (no absolute paths, "..", devices or escaping
+    symlinks; bounded size), validate dootd.toml, check that `run` is an executable
+    ELF binary for this CPU
+ 5. Move → apps/<app>/releases/<tag>/ (root-owned, read-only to the app)
  ── downtime starts ──
- 8. Router marks app `deploying` (503 page)
- 9. Stop old process (SIGTERM, 10 s, then SIGKILL the cgroup)
-10. Pre-deploy backup of DATA_DIR SQLite files (snapshot local; upload async)
-11. Swap `current` symlink atomically (rename)
-12. Wipe tmp/, start new process, health check
+ 6. Router marks app `deploying` (503 page)
+ 7. Stop old process (SIGTERM, 10 s, then SIGKILL the cgroup)
+ 8. Pre-deploy backup of DATA_DIR SQLite files (snapshot local; upload async)
+ 9. Swap `current` symlink atomically (rename)
+10. Wipe tmp/, start new process, health check
  ── downtime ends ──
-13a. Healthy → route traffic, mark deployment `succeeded`, prune old releases
-13b. Unhealthy → stop new, point `current` back, start old release, mark `failed`
+11a. Healthy → route traffic, mark deployment `succeeded`, prune to 3 kept releases
+11b. Unhealthy → stop new, point `current` back, start old release, mark `failed`
      (DB is NOT restored automatically; UI offers "Restore pre-deploy backup")
 ```
 
-- If a build fails at steps 2–7, the running app is never affected (verified in E2E: same PID keeps serving).
+- A failure in steps 2–5 never affects the running app.
 - A release that fails its health check is deleted; the previous release is restored and restarted only if it was running before.
-- Build logs are stored per deployment (`logs/builds/<deployment-id>.log`, last 20 kept) and streamed live by tailing the file.
-- On startup, deployments left `queued/building/deploying` by a crash or restart are marked failed, and `builds/<app>/` is emptied. A shutdown cancels the running build; a switch that already started (steps 8–13) always completes with a detached context so `current` and the running process never disagree.
-- Release metadata (SHA, commit subject, zig version, `run`, `health_path`) is stored in the `releases` table, so rollbacks and restarts don't re-read `dootd.toml`.
-- Whether each app should run after a restart is stored in `app_state` (stopping an app keeps it stopped across dootd restarts).
-- **Redeploy** runs the same pipeline from the latest commit. **Rollback** runs only steps 8–13 using an earlier release, with no build.
+- Tags become release directory names, so they must match `[A-Za-z0-9][A-Za-z0-9._-]{0,63}` (e.g. `v1.4.0`); `DOOTD_RELEASE` is the tag.
+- Deploy logs are stored per deployment (`logs/builds/<deployment-id>.log`, last 20 kept) and streamed live.
+- On startup, deployments left `queued/building/deploying` by a crash or restart are marked failed and `downloads/` is emptied. A shutdown cancels the running download; a switch that already started (steps 6–11) always completes with a detached context so `current` and the running process never disagree.
+- Release metadata (tag, name, tarball SHA-256, `run`, `health_path`) is stored in the `releases` table, so rollbacks and restarts don't re-read `dootd.toml`.
+- Whether each app should run after a restart is stored in `app_state`.
+- **Roll back** switches to a kept release (no download). Deploying an older tag that is no longer kept downloads it again.
+- The release list comes from `GET /repos/<owner>/<repo>/releases?per_page=10` (drafts skipped), cached for a minute per app, so the page's 5 s refresh doesn't use up the API rate limit.
 - Deploys only ever happen when you click. There are no webhooks.
 
-### 11.1 Zig toolchain manager
-- The tarball URL and SHA-256 come from `https://ziglang.org/download/index.json`, using the entry for the exact version and `<arch>-linux`. The index is cached for 6 h.
-- dootd downloads, checks the SHA-256, extracts to a temporary directory and then renames it into `toolchains/zig/<version>/`. A partly finished download can never be used.
-- Toolchains stay until you delete them. The dashboard lists them, shows which apps use each one, and lets you delete unused ones.
-- Future: minisign signature verification and community mirrors.
-
-### 11.2 GitHub
-- A fine-grained PAT with **Contents: Read-only** on the selected repos is enough. dootd validates it when it's saved and uses it to list repos in the "Add app" form.
-- The PAT is only used as HTTP basic auth (`x-access-token`) for go-git, in memory, and **only for `github.com` URLs**. It is never written to disk in plain text or into `.git/config` (`.git` is deleted after the clone). It is stored sealed in `settings` under purpose `settings:github_token`.
-- `file:///` repositories are accepted for development and the E2E tests.
+### 11.1 GitHub
+- A fine-grained PAT with **Contents: Read-only** on the app repositories is enough (public repositories work without one). dootd validates it when it's saved, uses it to list repos in the "Add app" form, and sends it with release and asset API requests. Asset downloads redirect to a short-lived signed URL on another host; the token is not forwarded there.
+- The token is only ever sent to `api.github.com` and stored sealed in `settings` under purpose `settings:github_token`.
 
 ## 12. Backups
 
@@ -418,10 +417,10 @@ Email/webhook alerts are on the post-v1 backlog.
 - **Headers**: `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`, HSTS, `Cache-Control: no-store` on pages. Request bodies are capped at 256 KB.
 - **Messages** after an action use a short-lived `__Host-dootd-flash` cookie (60 s).
 - **Secrets**: tokens and env var values are never shown again after saving; env vars are listed by name only.
-- **Pages**: Apps (host summary, warnings and missing setup steps, app table) · App (status and actions, releases with rollback, deployments, env vars, settings, backups, delete) · Add app · Deployment (live build log) · Logs (live app log) · Monitoring · Settings (Cloudflare token, dashboard domain, domains, zones with "Set Full (strict)", GitHub, backups bucket, Zig toolchains) · Account (email, password, sessions) · Set up your account (one-time password only).
+- **Pages**: Apps (host summary, warnings and missing setup steps, app table) · App (status and actions, deploy a GitHub release, kept releases with rollback, deployments, env vars, settings, backups, delete) · Add app · Deployment (live build log) · Logs (live app log) · Monitoring · Settings (Cloudflare token, dashboard domain, domains, zones with "Set Full (strict)", GitHub, backups bucket) · Account (email, password, sessions) · Set up your account (one-time password only).
 
 ### 14.1 Apps in the database
-- The app **name is derived from the repository name**: lowercased, `_` and `.` become `-`. It must then be 2–24 characters of `a–z`, `0–9` and `-`, starting with a letter; otherwise the app is refused with the reason. One repository is one app, and `dootd.toml` is at its root.
+- The app **name is derived from the repository name**: lowercased, `_` and `.` become `-`. It must then be 2–24 characters of `a–z`, `0–9` and `-`, starting with a letter; otherwise the app is refused with the reason. One repository is one app. An app is just a repository, an optional domain, limits and env vars.
 - `apps` holds the configuration, `app_env` the sealed env vars (`app_env:<app>:<NAME>` as associated data). `internal/apps.Service` validates input (every problem reported at once), stores it and wires it into the deployer, supervisor and edge router at runtime; at startup it loads every stored app.
 - Ports are assigned once, from 20001 upwards, and never change.
 - Editing settings or env vars updates the stored config immediately; the running process keeps its old settings until a restart or deploy, and the dashboard says "restart needed" until then. Domain changes re-route immediately and clean up the old hostname.
@@ -435,11 +434,11 @@ dootd never updates itself. Re-running the installer (§8) downloads and verifie
 
 | Item | Target | Measured (Phase 6 E2E, Ubuntu 24.04 runner, 5 apps, idle) |
 |---|---|---|
-| dootd idle RSS | < 30 MB | 28 MB (11 MB anonymous, 18 MB mapped binary pages) |
+| dootd idle RSS | < 30 MB | 25 MB (11 MB anonymous, 15 MB mapped binary pages) |
 | dootd idle CPU | < 1 % (10 s sampling, no busy loops) | 0.03 % |
 | Proxy overhead | < 1 ms p50 added latency | not measured yet (soak test on a VPS) |
 | Restart with 5 apps | a few seconds of downtime | measured in the E2E (`systemctl restart` → all apps healthy) |
-| Binary size | < 30 MB | 21 MB (linux/amd64, stripped) |
+| Binary size | < 30 MB | 18 MB (linux/amd64, stripped) |
 
 To stay inside the memory budget dootd sets a soft heap limit of 12 MB (`debug.SetMemoryLimit`), `GOGC=50`, and returns freed memory to the kernel every 2 minutes. Setting `GOMEMLIMIT` or `GOGC` in the unit overrides this. The margin is small: most of the resident memory is the binary's own code pages, which grow with every dependency, so the Phase 6 E2E fails if RSS reaches 30 MB.
 
@@ -454,12 +453,12 @@ To stay inside the memory budget dootd sets a soft heap limit of 12 MB (`debug.S
 | D5 | Cloudflare Origin CA, no ACME | All domains are on Cloudflare; 15-year certs; no port 80 |
 | D6 | Zone AOP with own CA + IP filter | IP filter alone allows any Cloudflare customer through |
 | D7 | Snapshot backups every 3 h (not continuous replication) | RPO 3 h accepted; much simpler than a Litestream-style design |
-| D8 | Pinned Zig per app, also used as C compiler | Reproducible builds, a single toolchain |
+| D8 | Pinned Zig per app, also used as C compiler | Reproducible builds, a single toolchain (superseded by D38) |
 | D9 | Server-rendered HTML + a small vanilla script (no htmx) + server-rendered SVG | No frontend build pipeline and no vendored library; a strict CSP (`script-src 'self'`) is easy |
 | D10 | Kill cgroups by PID, not `cgroup.kill` | `cgroup.kill` makes later `CLONE_INTO_CGROUP` children die instantly on current Ubuntu kernels |
 | D11 | No `memory.high`, swap and zswap off for apps | Predictable OOM + restart instead of an app stalled near its limit |
 | D12 | E2E scripts run on GitHub-hosted Ubuntu 24.04 VMs | Real systemd + full cgroup v2; catches kernel behaviour unit tests cannot |
-| D13 | Clone as root, chown to the app user for the build, then make the tree root-owned (never following symlinks, skipping files owned by others) | The build can't escape into other users' files, and the app can't modify its own release |
+| D13 | Clone as root, chown to the app user for the build, then make the tree root-owned (never following symlinks, skipping files owned by others) | The build can't escape into other users' files, and the app can't modify its own release (superseded by D38) |
 | D14 | Optional app path (monorepo subdirectory) | Lets one repo hold several apps; also lets E2E deploy `examples/*` straight from this repo (superseded by D36) |
 | D15 | Local admin API on a Unix socket + `dootd ctl` | Deploys before the dashboard exists; permanent SSH fallback; no network exposure (superseded by D33) |
 | D16 | Enforce AOP per zone, only after Cloudflare reports it active; persist the state | Never break a site during setup; never fail open after a restart |
@@ -484,6 +483,9 @@ To stay inside the memory budget dootd sets a soft heap limit of 12 MB (`debug.S
 | D35 | Updates by re-running the installer; no self-update | The same single command for install, update and recovery; no update guard or rollback machinery |
 | D36 | App name = repository name; `dootd.toml` at the repo root; no monorepo path | Predictable names and backup folders; one repo is one app |
 | D37 | Bucket folder per app (`<app>/`), restore chosen at Add app; dootd's own settings are not backed up | Moving servers only needs the bucket and a few settings typed again; no master-key export (recovery kit) |
+| D38 | dootd never builds: apps are built and tested in GitHub Actions and published as GitHub Releases; dootd deploys the release tarball | Builds (sqlite with ReleaseSafe needs ~2 GB) don't fit next to the apps on a 1 GB VPS; removes the toolchain manager, the builder, git cloning and their attack surface |
+| D39 | Releases, not Actions artifacts | Permanent, named by version, simple API; rollback is picking an older tag |
+| D40 | One fixed asset name per architecture (`app-linux-<arch>.tar.gz`) plus `checksums.txt`, static musl binaries | No per-app naming rules; binaries don't depend on the server's libc; the checksum catches truncated or swapped downloads |
 
 ## 18. Test-only environment variables
 
@@ -493,6 +495,7 @@ The end-to-end scripts run dootd against fakes. These variables are read only by
 |---|---|
 | `DOOTD_TEST_CLOUDFLARE_API` | Cloudflare API base URL (the fake from `e2etool cfmock`) |
 | `DOOTD_TEST_PUBLIC_IPV4`, `DOOTD_TEST_PUBLIC_IPV6` | Skip IP detection (`off` = no IPv6) |
+| `DOOTD_TEST_GITHUB_API` | GitHub API base URL (the fake from `e2etool ghmock`) |
 | `DOOTD_TEST_BACKUP_INTERVAL`, `DOOTD_TEST_BACKUP_RETENTION` | Short backup schedule (e.g. `30s`, `10m`) |
 | `DOOTD_TEST_WARN_PERCENT` | Disk and memory warning threshold |
 

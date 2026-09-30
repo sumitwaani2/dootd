@@ -220,7 +220,7 @@ func (s *Server) metricWarnings(ctx context.Context, rows []AppRow) []string {
 	if p, ok := s.Metrics.Latest(metrics.Host); ok {
 		if p.DiskTotal > 0 {
 			if pct := 100 * float64(p.DiskUsed) / float64(p.DiskTotal); pct > th.DiskPercent {
-				ws = append(ws, fmt.Sprintf("Disk is %.0f%% full (%s free). Builds, logs and backups need space.", pct, fmtBytes(float64(p.DiskTotal-p.DiskUsed))))
+				ws = append(ws, fmt.Sprintf("Disk is %.0f%% full (%s free). Releases, logs and backups need space.", pct, fmtBytes(float64(p.DiskTotal-p.DiskUsed))))
 			}
 		}
 		if p.MemLimit > 0 {

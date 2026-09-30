@@ -87,16 +87,18 @@ check "settings shows the zone SSL mode warning" page_has /settings "Set Full (s
 check "settings shows the dashboard domain as ready" page_has /settings "s-running\">ready"
 
 say "Create an app"
-mkrepo web examples/sample-c
-echo "// xss subject" >> "$WORKS/web/src/main.c"; commit web 'first <script>alert(1)</script>'
-check "invalid input: 422" post_is 422 /apps --data type=x --data repo=x
-check "form lists every problem" bash -c "grep -q 'type must be zig or c' $OUT/post.html && grep -q 'unsupported repo' $OUT/post.html"
-check "create web: redirect to its page" post_is "303 $DASH/apps/web" /apps --data type=c --data-urlencode "repo=file://$GIT/web.git" --data branch=main \
+check "sample-c's release workflow" sample_dist sample-c
+DIST="$E2E/dist-sample-c"
+mkrepo web
+publish web v1 "$DIST" 'first <script>alert(1)</script>'
+check "invalid input: 422" post_is 422 /apps --data repo=x --data memory=lots
+check "form lists every problem" bash -c "grep -q 'memory limit' $OUT/post.html && grep -q 'unsupported repository' $OUT/post.html"
+check "create web: redirect to its page" post_is "303 $DASH/apps/web" /apps --data-urlencode "repo=https://github.com/e2e/web" \
   --data domain=$APP_HOST --data memory=64M
-check "the same repository twice is refused" post_is 422 /apps --data type=c --data-urlencode "repo=file://$GIT/web.git" --data branch=main
-mkrepo web2 examples/sample-c
-check "duplicate domain refused" post_is 422 /apps --data type=c --data-urlencode "repo=file://$GIT/web2.git" --data branch=main --data domain=$APP_HOST
-check "the dashboard domain cannot be an app domain" post_is 422 /apps --data type=c --data-urlencode "repo=file://$GIT/web2.git" --data branch=main --data domain=$D
+check "the same repository twice is refused" post_is 422 /apps --data-urlencode "repo=https://github.com/e2e/web"
+mkrepo web2
+check "duplicate domain refused" post_is 422 /apps --data-urlencode "repo=https://github.com/e2e/web2" --data domain=$APP_HOST
+check "the dashboard domain cannot be an app domain" post_is 422 /apps --data-urlencode "repo=https://github.com/e2e/web2" --data domain=$D
 post /settings/dashboard-domain --data "domain=$APP_HOST" >/dev/null
 check "an app domain cannot become the dashboard domain" flash_has "is the domain of the app web" /settings
 check "system user created" id dootd-web
@@ -113,13 +115,14 @@ check "env value never shown" page_lacks /apps/web 'hello world'
 check "env value not stored in plain text" bash -c "! grep -aqF 'hello world' $DATA_ROOT/dootd.db $DATA_ROOT/dootd.db-wal 2>/dev/null"
 
 say "Deploy from the dashboard"
-check "live stream ends with succeeded" deploy_is succeeded web
+check "release name is HTML-escaped in the Deploy menu" page_has /apps/web '&lt;script&gt;alert(1)&lt;/script&gt;'
+check "live stream ends with succeeded" deploy_is succeeded web v1
 DEP1="$DEP"
-check "stream carried the build log" last_has 'cloning'
+check "stream carried the deploy log" last_has 'downloading app-linux-amd64.tar.gz'
 check "finished page shows the full log" page_has "/deployments/$DEP1" 'SUCCEEDED'
 check "site serves the app" wait_for 10 site_has "$APP_HOST" / "Hello from C on dootd"
 check "app got its env var" env_has "GREETING=hello world"
-check "commit subject is HTML-escaped" page_has /apps/web '&lt;script&gt;alert(1)&lt;/script&gt;'
+check "release name is HTML-escaped in kept releases" page_has /apps/web '<td>first &lt;script&gt;alert(1)&lt;/script&gt;</td>'
 check "no raw script tag in the page" page_lacks /apps/web '<script>alert'
 R1="$(current web)"
 
@@ -137,12 +140,11 @@ post /apps/web/start >/dev/null
 check "started: site 200" wait_for 20 site_is 200 "$APP_HOST" /
 
 say "Second deploy and rollback"
-set_title web "web v2"
-commit web "v2"
-check "second deploy succeeds" deploy_is succeeded web
-check "site shows v2" wait_for 10 site_has "$APP_HOST" / "web v2"
+publish web v2 "$DIST"
+check "second deploy succeeds" deploy_is succeeded web v2
+check "site shows v2" wait_for 10 site_has "$APP_HOST" / "Release: v2<"
 check "releases list has a rollback button" page_has /apps/web "value=\"$R1\""
-check "rollback succeeds" deploy_is succeeded web "$R1"
+check "rollback succeeds" rollback_is succeeded web "$R1"
 check "site back on the first release" wait_for 10 site_has "$APP_HOST" / "Release: $R1<"
 
 say "Live app logs"

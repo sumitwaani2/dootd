@@ -16,7 +16,6 @@ import (
 	"github.com/sumitwaani2/dootd/internal/apps"
 	"github.com/sumitwaani2/dootd/internal/auth"
 	"github.com/sumitwaani2/dootd/internal/backup"
-	"github.com/sumitwaani2/dootd/internal/builder"
 	"github.com/sumitwaani2/dootd/internal/buildinfo"
 	"github.com/sumitwaani2/dootd/internal/cgroup"
 	"github.com/sumitwaani2/dootd/internal/deployer"
@@ -28,7 +27,6 @@ import (
 	"github.com/sumitwaani2/dootd/internal/store"
 	"github.com/sumitwaani2/dootd/internal/supervisor"
 	"github.com/sumitwaani2/dootd/internal/testenv"
-	"github.com/sumitwaani2/dootd/internal/toolchain"
 	"github.com/sumitwaani2/dootd/internal/users"
 	"github.com/sumitwaani2/dootd/internal/web"
 )
@@ -83,10 +81,7 @@ func serve(log *slog.Logger) error {
 
 	sup := supervisor.New(supervisor.Deps{Layout: lay, Cgroups: cg, Log: log})
 	dep, err := deployer.New(ctx, deployer.Deps{
-		Layout: lay, Store: st, Secrets: box, Supervisor: sup,
-		Builder: &builder.Builder{Layout: lay, Cgroups: cg},
-		Zig:     toolchain.New(lay.ToolchainsDir()),
-		Log:     log,
+		Layout: lay, Store: st, Secrets: box, Supervisor: sup, Log: log,
 	})
 	if err != nil {
 		return err
@@ -131,7 +126,7 @@ func serve(log *slog.Logger) error {
 		Requests: edgeMgr.Router.Stats}
 
 	dash := &web.Server{
-		Auth: authSvc, Apps: appSvc, Dep: dep, Sup: sup, Edge: edgeMgr, Zig: dep.Zig, Store: st,
+		Auth: authSvc, Apps: appSvc, Dep: dep, Sup: sup, Edge: edgeMgr, Store: st,
 		Backups: bk, Metrics: mc,
 		Thresholds: web.Thresholds{DiskPercent: testenv.WarnPercent(85), MemoryPercent: testenv.WarnPercent(90), CertDays: 14},
 		Layout:     lay, Version: buildinfo.Version, Log: log.With("component", "web"),
