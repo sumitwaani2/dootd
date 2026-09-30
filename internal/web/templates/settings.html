@@ -62,13 +62,13 @@
   {{if .Data.GitHubSet}}
   <p>A token is set{{with .Data.GitHubLogin}} for <b>{{.}}</b>{{end}}. It is stored encrypted and only sent to github.com.</p>
   {{else}}
-  <p class="muted">No token: only public repositories can be deployed.</p>
+  <p class="muted">No token: only releases of public repositories can be deployed.</p>
   {{end}}
   <form method="post" action="/settings/github-token" class="grid">
     {{template "csrf" $csrf}}
     <label class="wide">{{if .Data.GitHubSet}}Replace token{{else}}Personal access token{{end}}
       <input type="password" name="token" autocomplete="off" placeholder="github_pat_…">
-      <small>Fine-grained token with <b>Contents: Read-only</b> on the repositories you deploy.</small></label>
+      <small>Fine-grained token with <b>Contents: Read-only</b> on your app repositories: dootd lists their releases and downloads the release files.</small></label>
     <div class="wide"><button>Save token</button>
     {{if .Data.GitHubSet}}<button name="remove" value="1" class="link" data-confirm-click="Remove the GitHub token?">remove token</button>{{end}}</div>
   </form>
@@ -93,17 +93,4 @@
 </section>
 
 
-<section class="card">
-  <h2>Zig toolchains</h2>
-  <p class="muted">Downloaded when a deploy needs them. Deleting one only means the next build that pins it downloads it again.</p>
-  {{if .Data.Toolchains}}
-  <table>
-    <thead><tr><th>Version</th><th>Size</th><th>Current releases built with it</th><th></th></tr></thead>
-    <tbody>{{range .Data.Toolchains}}
-      <tr><td>{{.Version}}</td><td>{{bytes .Bytes}}</td><td>{{range .UsedBy}}<a href="/apps/{{.}}">{{.}}</a> {{else}}<span class="muted">none</span>{{end}}</td>
-      <td><form method="post" action="/settings/toolchains/delete" class="inline" data-confirm="Delete Zig {{.Version}}?">{{template "csrf" $csrf}}<input type="hidden" name="version" value="{{.Version}}"><button class="link">delete</button></form></td></tr>
-    {{end}}</tbody>
-  </table>
-  {{else}}<p class="muted">None yet.</p>{{end}}
-</section>
 {{end}}

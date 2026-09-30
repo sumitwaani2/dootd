@@ -18,7 +18,6 @@ import (
 	"github.com/sumitwaani2/dootd/internal/hostinfo"
 	"github.com/sumitwaani2/dootd/internal/metrics"
 	"github.com/sumitwaani2/dootd/internal/supervisor"
-	"github.com/sumitwaani2/dootd/internal/toolchain"
 )
 
 const settingGitHubLogin = "github_login"
@@ -233,15 +232,14 @@ func (s *Server) home(w http.ResponseWriter, r *http.Request) {
 func formInput(r *http.Request) apps.Input {
 	f := func(k string) string { return r.PostFormValue(k) }
 	return apps.Input{
-		Type: f("type"), Repo: f("repo"), Branch: f("branch"), Domain: f("domain"),
-		Memory: f("memory"), CPU: f("cpu"), Pids: f("pids"), BuildMemory: f("build_memory"), BuildTimeout: f("build_timeout"),
+		Repo: f("repo"), Domain: f("domain"),
+		Memory: f("memory"), CPU: f("cpu"), Pids: f("pids"),
 		RestoreFrom: f("restore_from"),
 	}
 }
 
 func (s *Server) newAppPage(w http.ResponseWriter, r *http.Request) {
-	in := apps.Input{Type: "zig", Branch: "main", Memory: "256M", CPU: "1", Pids: "256", BuildMemory: "1G", BuildTimeout: "15m",
-		RestoreFrom: apps.AutoFolder}
+	in := apps.Input{Memory: "256M", CPU: "1", Pids: "256", RestoreFrom: apps.AutoFolder}
 	s.render(w, r, http.StatusOK, "app_new", "Add app", "apps", s.newAppData(r.Context(), in, nil))
 }
 
@@ -328,6 +326,11 @@ func (s *Server) appPage(w http.ResponseWriter, r *http.Request) {
 		}
 		row.App = full
 		data["Releases"], _ = s.Dep.Releases(r.Context(), name)
+		gh, err := s.Dep.GitHubReleases(r.Context(), name)
+		data["GitHubReleases"] = gh
+		if err != nil {
+			data["GitHubErr"] = err.Error()
+		}
 		deps, _ := s.Dep.Deployments(r.Context(), name, 10)
 		data["Deployments"] = deps
 		if s.Backups != nil {
@@ -336,9 +339,9 @@ func (s *Server) appPage(w http.ResponseWriter, r *http.Request) {
 			data["Policy"] = s.policyText()
 		}
 		data["Edit"] = apps.Input{
-			Repo: full.Repo, Branch: full.Branch, Domain: full.Domain,
+			Repo: full.Repo, Domain: full.Domain,
 			Memory: humanLimit(full.Limits.MemoryMax), CPU: strconv.FormatFloat(full.Limits.CPUMax, 'f', -1, 64),
-			Pids: strconv.Itoa(full.Limits.PidsMax), BuildMemory: humanLimit(full.BuildMemory), BuildTimeout: full.BuildTimeout.String(),
+			Pids: strconv.Itoa(full.Limits.PidsMax),
 		}
 	}
 	if row.Domain != "" {
@@ -363,7 +366,7 @@ func humanLimit(n int64) string {
 
 func (s *Server) deployApp(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("app")
-	id, err := s.Dep.Deploy(r.Context(), name)
+	id, err := s.Dep.Deploy(r.Context(), name, r.PostFormValue("tag"))
 	if err != nil {
 		redirect(w, r, "/apps/"+name, err, "")
 		return
@@ -401,7 +404,7 @@ func (s *Server) appAction(w http.ResponseWriter, r *http.Request) {
 func (s *Server) updateApp(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("app")
 	_, err := s.Apps.Update(r.Context(), name, formInput(r))
-	msg := "Settings saved. Build settings apply to the next deploy; limits and the domain need a restart."
+	msg := "Settings saved. Limits need a restart; the domain is re-routed now."
 	redirect(w, r, "/apps/"+name, err, msg)
 }
 
@@ -485,26 +488,6 @@ func (s *Server) settingsPage(w http.ResponseWriter, r *http.Request) {
 	}
 	data["Edge"] = s.Edge.Status(ctx)
 	data["DashboardReady"] = s.Edge.DashboardReady()
-	tcs, _ := s.Zig.List()
-	pins := map[string][]string{}
-	for _, name := range s.Dep.Apps() {
-		if rs, err := s.Dep.Releases(ctx, name); err == nil {
-			for _, rel := range rs {
-				if rel.Current {
-					pins[rel.ZigVersion] = append(pins[rel.ZigVersion], name)
-				}
-			}
-		}
-	}
-	type tc struct {
-		toolchain.Installed
-		UsedBy []string
-	}
-	var list []tc
-	for _, t := range tcs {
-		list = append(list, tc{t, pins[t.Version]})
-	}
-	data["Toolchains"] = list
 	if s.Backups != nil {
 		if c, ok, err := s.Backups.S3Config(ctx); err == nil && ok {
 			c.SecretKey = ""
@@ -520,6 +503,7 @@ func (s *Server) setGitHubToken(w http.ResponseWriter, r *http.Request) {
 	tok := strings.TrimSpace(r.PostFormValue("token"))
 	if r.PostFormValue("remove") == "1" {
 		err := s.Dep.SetGitHubToken(ctx, "")
+		s.Dep.ForgetReleases("")
 		s.Store.Writer().ExecContext(ctx, `DELETE FROM settings WHERE key = ?`, settingGitHubLogin)
 		redirect(w, r, "/settings", err, "GitHub token removed.")
 		return
@@ -540,6 +524,7 @@ func (s *Server) setGitHubToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Store.SetSetting(ctx, settingGitHubLogin, []byte(info.Login))
+	s.Dep.ForgetReleases("")
 	redirect(w, r, "/settings", nil, "GitHub token saved (encrypted). It belongs to "+info.Login+".")
 }
 
@@ -594,12 +579,6 @@ func (s *Server) setDashboardDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	redirect(w, r, "/settings#dashboard-domain", nil, "Dashboard domain "+domain+" saved. DNS record, certificate and origin pulls are being set up; this page shows when it is ready.")
-}
-
-func (s *Server) deleteToolchain(w http.ResponseWriter, r *http.Request) {
-	v := r.PostFormValue("version")
-	err := s.Zig.Delete(v)
-	redirect(w, r, "/settings", err, "Zig "+v+" deleted. It is downloaded again when a deploy needs it.")
 }
 
 // ---------------------------------------------------------------- account

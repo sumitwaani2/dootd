@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/sumitwaani2/dootd/internal/app"
-	"github.com/sumitwaani2/dootd/internal/builder"
 	"github.com/sumitwaani2/dootd/internal/deployer"
 	"github.com/sumitwaani2/dootd/internal/edge"
 	"github.com/sumitwaani2/dootd/internal/github"
@@ -42,26 +41,21 @@ type Edge interface {
 
 // App is one app as configured in the dashboard.
 type App struct {
-	Name         string
-	Type         app.Type
-	Repo         string // as entered, normalized
-	Branch       string
-	Domain       string
-	Port         int
-	Limits       app.Limits
-	BuildMemory  int64
-	BuildTimeout time.Duration
-	CreatedAt    time.Time
-	EnvNames     []string
+	Name      string
+	Repo      string // https://github.com/<owner>/<repo>
+	Domain    string
+	Port      int
+	Limits    app.Limits
+	CreatedAt time.Time
+	EnvNames  []string
 }
 
 // Input is the form data for creating or editing an app. Empty optional
 // fields mean "default" on create; edits send every field. The name is
 // never entered: it is derived from the repository name (Req 8.2).
 type Input struct {
-	Type, Repo, Branch, Domain string
-	Memory, CPU, Pids          string
-	BuildMemory, BuildTimeout  string
+	Repo, Domain      string
+	Memory, CPU, Pids string
 	// RestoreFrom (create only) is a bucket folder whose newest backup is
 	// restored into the new app ("" = start empty, AutoFolder = the folder
 	// named like the app, if there is one).
@@ -130,15 +124,15 @@ func (s *Service) Load(ctx context.Context) error {
 	return nil
 }
 
-const appCols = `name, type, repo, branch, domain, port, memory_max, cpu_max, pids_max, build_memory, build_timeout, created_at`
+// The type, branch, path, build_memory and build_timeout columns belong to
+// removed features and are left at fixed values.
+const appCols = `name, repo, domain, port, memory_max, cpu_max, pids_max, created_at`
 
 func scanApp(r interface{ Scan(...any) error }) (App, error) {
 	var a App
-	var typ string
-	var timeout, created int64
-	err := r.Scan(&a.Name, &typ, &a.Repo, &a.Branch, &a.Domain, &a.Port,
-		&a.Limits.MemoryMax, &a.Limits.CPUMax, &a.Limits.PidsMax, &a.BuildMemory, &timeout, &created)
-	a.Type, a.BuildTimeout, a.CreatedAt = app.Type(typ), time.Duration(timeout)*time.Second, time.Unix(created, 0)
+	var created int64
+	err := r.Scan(&a.Name, &a.Repo, &a.Domain, &a.Port, &a.Limits.MemoryMax, &a.Limits.CPUMax, &a.Limits.PidsMax, &created)
+	a.CreatedAt = time.Unix(created, 0)
 	return a, err
 }
 
@@ -215,11 +209,10 @@ func (s *Service) config(ctx context.Context, a App) (deployer.AppConfig, error)
 	}
 	return deployer.AppConfig{
 		Base: app.Spec{
-			Name: a.Name, Type: a.Type, Domain: a.Domain, Port: a.Port,
+			Name: a.Name, Domain: a.Domain, Port: a.Port,
 			HealthPath: app.DefaultHealthPath, Env: env, Limits: a.Limits,
 		},
-		Repo: repo, Branch: a.Branch,
-		BuildMemory: a.BuildMemory, BuildTimeout: a.BuildTimeout,
+		Repo: repo,
 	}, nil
 }
 
@@ -229,22 +222,13 @@ func (s *Service) validate(ctx context.Context, in Input, existing *App) (App, e
 	a := App{}
 	if existing != nil {
 		a = *existing
-	} else {
-		a.Type = app.Type(in.Type)
-		if a.Type != app.TypeZig && a.Type != app.TypeC {
-			errs = append(errs, errors.New("type must be zig or c"))
-		}
 	}
 	repo, err := github.ParseRepo(in.Repo)
 	if err != nil {
 		errs = append(errs, err)
 	} else {
-		if repo.GitHub {
-			a.Repo = "https://github.com/" + repo.Owner + "/" + repo.Name
-		} else {
-			a.Repo = repo.URL
-		}
-		name, err := app.NameFromRepo(repo.RepoName())
+		a.Repo = repo.URL()
+		name, err := app.NameFromRepo(repo.Name)
 		switch {
 		case err != nil:
 			errs = append(errs, err)
@@ -253,13 +237,6 @@ func (s *Service) validate(ctx context.Context, in Input, existing *App) (App, e
 		case name != existing.Name:
 			errs = append(errs, fmt.Errorf("the app is named after its repository, so it can only move to a repository named %q", existing.Name))
 		}
-	}
-	a.Branch = strings.TrimSpace(in.Branch)
-	if a.Branch == "" {
-		a.Branch = "main"
-	}
-	if err := github.ValidateBranch(a.Branch); err != nil {
-		errs = append(errs, err)
 	}
 	a.Domain = strings.ToLower(strings.TrimSpace(in.Domain))
 	if a.Domain != "" {
@@ -289,22 +266,8 @@ func (s *Service) validate(ctx context.Context, in Input, existing *App) (App, e
 		a.Limits.PidsMax, err = strconv.Atoi(v)
 		return
 	})
-	parse("build memory", in.BuildMemory, "1G", func(v string) (err error) {
-		a.BuildMemory, err = app.ParseBytes(v)
-		if err == nil && a.BuildMemory < 128<<20 {
-			err = errors.New("must be at least 128M")
-		}
-		return
-	})
-	parse("build timeout", in.BuildTimeout, "15m", func(v string) (err error) {
-		a.BuildTimeout, err = time.ParseDuration(v)
-		if err == nil && (a.BuildTimeout < 10*time.Second || a.BuildTimeout > 2*time.Hour) {
-			err = errors.New("must be between 10s and 2h")
-		}
-		return
-	})
 	if len(errs) == 0 {
-		spec := app.Spec{Name: a.Name, Type: a.Type, Port: firstPort, HealthPath: "/", Limits: a.Limits}
+		spec := app.Spec{Name: a.Name, Port: firstPort, HealthPath: "/", Limits: a.Limits}
 		if err := spec.Validate(); err != nil {
 			errs = append(errs, err)
 		}
@@ -399,9 +362,9 @@ func (s *Service) create(ctx context.Context, in Input) (App, error) {
 		return a, err
 	}
 	a.CreatedAt = time.Now()
-	if _, err := s.db.Writer().ExecContext(ctx, `INSERT INTO apps (`+appCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		a.Name, string(a.Type), a.Repo, a.Branch, a.Domain, a.Port, a.Limits.MemoryMax, a.Limits.CPUMax,
-		a.Limits.PidsMax, a.BuildMemory, int64(a.BuildTimeout/time.Second), a.CreatedAt.Unix()); err != nil {
+	if _, err := s.db.Writer().ExecContext(ctx, `INSERT INTO apps (`+appCols+`, type, branch, build_memory, build_timeout)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'release', '', 0, 0)`,
+		a.Name, a.Repo, a.Domain, a.Port, a.Limits.MemoryMax, a.Limits.CPUMax, a.Limits.PidsMax, a.CreatedAt.Unix()); err != nil {
 		return a, fmt.Errorf("save app: %w", err)
 	}
 	cfg, err := s.config(ctx, a)
@@ -430,10 +393,9 @@ func (s *Service) Update(ctx context.Context, name string, in Input) (App, error
 	if err != nil {
 		return a, err
 	}
-	if _, err := s.db.Writer().ExecContext(ctx, `UPDATE apps SET repo = ?, branch = ?, domain = ?, memory_max = ?,
-		cpu_max = ?, pids_max = ?, build_memory = ?, build_timeout = ? WHERE name = ?`,
-		a.Repo, a.Branch, a.Domain, a.Limits.MemoryMax, a.Limits.CPUMax, a.Limits.PidsMax,
-		a.BuildMemory, int64(a.BuildTimeout/time.Second), name); err != nil {
+	if _, err := s.db.Writer().ExecContext(ctx, `UPDATE apps SET repo = ?, domain = ?, memory_max = ?,
+		cpu_max = ?, pids_max = ?, type = 'release', branch = '' WHERE name = ?`,
+		a.Repo, a.Domain, a.Limits.MemoryMax, a.Limits.CPUMax, a.Limits.PidsMax, name); err != nil {
 		return a, err
 	}
 	if err := s.pushConfig(ctx, a); err != nil {
@@ -545,7 +507,6 @@ func (s *Service) Delete(ctx context.Context, name string, keepData, deleteBacku
 	kept, err := s.dep.PurgeFiles(name, keepData, time.Now().Unix())
 	warn("files", err)
 	res.KeptData = kept
-	warn("build cgroup", builder.RemoveGroup(s.dep.Builder, name))
 	warn("system user", users.Remove(name))
 	if deleteBackups && s.backups != nil {
 		err := s.backups.DeleteAll(sctx, name)

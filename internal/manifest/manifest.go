@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -21,39 +20,26 @@ const FileName = "dootd.toml"
 
 const maxSize = 64 << 10
 
-// Manifest is a validated dootd.toml.
+// Manifest is a validated dootd.toml (contract 2: it only says how to run
+// the app; the app is built by its release workflow).
 type Manifest struct {
 	Contract   int
-	ZigVersion string
-	Build      string   // shell command, run with /bin/sh -c
-	Run        []string // argv; Run[0] relative to the app root
+	Run        []string // argv; Run[0] relative to the release root
 	HealthPath string
 }
 
 type raw struct {
 	Contract   *int    `toml:"contract"`
-	ZigVersion *string `toml:"zig_version"`
-	Build      *string `toml:"build"`
 	Run        *string `toml:"run"`
 	HealthPath *string `toml:"health_path"`
 }
 
-var zigVersionRe = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
-
-// DefaultBuild returns the default build command for an app type.
-func DefaultBuild(t app.Type) string {
-	if t == app.TypeC {
-		return "make"
-	}
-	return "zig build -Doptimize=ReleaseSafe"
-}
-
-// Load reads dir/dootd.toml and validates it for an app of type t.
-func Load(dir string, t app.Type) (*Manifest, error) {
+// Load reads dir/dootd.toml and validates it.
+func Load(dir string) (*Manifest, error) {
 	p := filepath.Join(dir, FileName)
 	f, err := os.Open(p)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("%s not found at the app root; see docs/app-contract.md", FileName)
+		return nil, fmt.Errorf("%s not found at the root of the release tarball; see docs/app-contract.md", FileName)
 	}
 	if err != nil {
 		return nil, err
@@ -69,11 +55,11 @@ func Load(dir string, t app.Type) (*Manifest, error) {
 	if len(b) > maxSize {
 		return nil, fmt.Errorf("%s is larger than 64 KB", FileName)
 	}
-	return Parse(b, t)
+	return Parse(b)
 }
 
 // Parse validates manifest content, reporting every problem at once.
-func Parse(b []byte, t app.Type) (*Manifest, error) {
+func Parse(b []byte) (*Manifest, error) {
 	var r raw
 	md, err := toml.Decode(string(b), &r)
 	if err != nil {
@@ -81,34 +67,24 @@ func Parse(b []byte, t app.Type) (*Manifest, error) {
 	}
 	var errs []error
 	for _, k := range md.Undecoded() {
-		errs = append(errs, fmt.Errorf("unknown key %q", k.String()))
+		switch k.String() {
+		case "zig_version", "build":
+			errs = append(errs, fmt.Errorf("%s is not used any more: the app is built by its release workflow (docs/app-contract.md §2); remove it", k))
+		default:
+			errs = append(errs, fmt.Errorf("unknown key %q", k.String()))
+		}
 	}
-	m := &Manifest{Build: DefaultBuild(t), HealthPath: app.DefaultHealthPath}
+	m := &Manifest{HealthPath: app.DefaultHealthPath}
 
 	switch {
 	case r.Contract == nil:
-		errs = append(errs, errors.New("contract is required (use contract = 1)"))
+		errs = append(errs, fmt.Errorf("contract is required (use contract = %d)", app.ContractVersion))
+	case *r.Contract == 1:
+		errs = append(errs, errors.New("contract = 1 (dootd builds the app) is no longer supported: build it in GitHub Actions and use contract = 2 (docs/app-contract.md §2)"))
 	case *r.Contract != app.ContractVersion:
 		errs = append(errs, fmt.Errorf("contract = %d is not supported by this dootd (supported: %d)", *r.Contract, app.ContractVersion))
 	default:
 		m.Contract = *r.Contract
-	}
-
-	switch {
-	case r.ZigVersion == nil:
-		errs = append(errs, errors.New(`zig_version is required, e.g. zig_version = "0.16.0"`))
-	case !zigVersionRe.MatchString(*r.ZigVersion):
-		errs = append(errs, fmt.Errorf("zig_version %q must be an exact release like \"0.16.0\" (not master or a range)", *r.ZigVersion))
-	default:
-		m.ZigVersion = *r.ZigVersion
-	}
-
-	if r.Build != nil {
-		if strings.TrimSpace(*r.Build) == "" {
-			errs = append(errs, errors.New("build must not be empty (omit it to use the default)"))
-		} else {
-			m.Build = *r.Build
-		}
 	}
 
 	if r.Run == nil {
@@ -138,10 +114,10 @@ func Parse(b []byte, t app.Type) (*Manifest, error) {
 // checkRelPath requires a clean path relative to the app root.
 func checkRelPath(p string) error {
 	if filepath.IsAbs(p) {
-		return fmt.Errorf("binary path %q must be relative to the app root", p)
+		return fmt.Errorf("binary path %q must be relative to the tarball root", p)
 	}
 	if c := filepath.Clean(p); c == ".." || strings.HasPrefix(c, "../") {
-		return fmt.Errorf("binary path %q must stay inside the app root", p)
+		return fmt.Errorf("binary path %q must stay inside the release", p)
 	}
 	return nil
 }

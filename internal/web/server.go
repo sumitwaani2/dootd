@@ -29,7 +29,6 @@ import (
 	"github.com/sumitwaani2/dootd/internal/metrics"
 	"github.com/sumitwaani2/dootd/internal/store"
 	"github.com/sumitwaani2/dootd/internal/supervisor"
-	"github.com/sumitwaani2/dootd/internal/toolchain"
 )
 
 //go:embed templates/*.html
@@ -50,7 +49,6 @@ type Server struct {
 	Dep        *deployer.Deployer
 	Sup        *supervisor.Supervisor
 	Edge       *edge.Manager
-	Zig        *toolchain.Zig
 	Store      *store.Store
 	Backups    *backup.Service
 	Metrics    *metrics.Collector
@@ -114,7 +112,6 @@ func (s *Server) Handler() (http.Handler, error) {
 	authed("POST /settings/cloudflare-token", s.setCloudflareToken)
 	authed("POST /settings/edge-sync", s.edgeSync)
 	authed("POST /settings/ssl-strict", s.sslStrict)
-	authed("POST /settings/toolchains/delete", s.deleteToolchain)
 	authed("GET /account", s.accountPage)
 	authed("POST /account/email", s.changeEmail)
 	authed("POST /account/password", s.changePassword)

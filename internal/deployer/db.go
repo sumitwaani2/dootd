@@ -12,7 +12,7 @@ import (
 // Deployment statuses.
 const (
 	StatusQueued    = "queued"
-	StatusBuilding  = "building"
+	StatusPreparing = "preparing" // downloading, verifying and unpacking the release
 	StatusDeploying = "deploying"
 	StatusSucceeded = "succeeded"
 	StatusFailed    = "failed"
@@ -41,14 +41,12 @@ type Deployment struct {
 // Done reports whether the deployment has finished.
 func (d Deployment) Done() bool { return d.Status == StatusSucceeded || d.Status == StatusFailed }
 
-// Release is a built release kept on disk.
+// Release is a GitHub release unpacked on the server (at most KeepReleases).
 type Release struct {
 	App        string    `json:"app"`
-	ID         string    `json:"id"`
-	GitSHA     string    `json:"git_sha"`
-	Subject    string    `json:"subject"`
-	Branch     string    `json:"branch"`
-	ZigVersion string    `json:"zig_version"`
+	ID         string    `json:"id"`      // the tag
+	Subject    string    `json:"subject"` // the release name
+	SHA256     string    `json:"sha256"`  // of the tarball
 	Run        []string  `json:"run"`
 	HealthPath string    `json:"health_path"`
 	CreatedAt  time.Time `json:"created_at"`
@@ -91,7 +89,7 @@ func (d *Deployer) insertDeployment(ctx context.Context, app, kind, releaseID st
 
 func (d *Deployer) setStatus(id int64, status string) {
 	col := ""
-	if status == StatusBuilding {
+	if status == StatusPreparing {
 		col = ", started_at = " + fmt.Sprint(time.Now().Unix())
 	}
 	if _, err := d.db.Writer().Exec(`UPDATE deployments SET status = ?`+col+` WHERE id = ?`, status, id); err != nil {
@@ -147,9 +145,9 @@ func (d *Deployer) Deployments(ctx context.Context, app string, limit int) ([]De
 func (d *Deployer) insertRelease(ctx context.Context, r Release) error {
 	run, _ := json.Marshal(r.Run)
 	_, err := d.db.Writer().ExecContext(ctx, `INSERT INTO releases
-		(app, id, git_sha, subject, branch, subdir, zig_version, run, health_path, created_at)
-		VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, ?)`,
-		r.App, r.ID, r.GitSHA, r.Subject, r.Branch, r.ZigVersion, string(run), r.HealthPath, unix(r.CreatedAt))
+		(app, id, git_sha, subject, branch, subdir, zig_version, sha256, run, health_path, created_at)
+		VALUES (?, ?, '', ?, '', '', '', ?, ?, ?, ?)`,
+		r.App, r.ID, r.Subject, r.SHA256, string(run), r.HealthPath, unix(r.CreatedAt))
 	return err
 }
 
@@ -184,7 +182,7 @@ func (d *Deployer) Releases(ctx context.Context, app string) ([]Release, error) 
 }
 
 func (d *Deployer) queryReleases(ctx context.Context, where string, args ...any) ([]Release, error) {
-	rows, err := d.db.Reader().QueryContext(ctx, `SELECT app, id, git_sha, subject, branch, zig_version, run, health_path, created_at
+	rows, err := d.db.Reader().QueryContext(ctx, `SELECT app, id, subject, sha256, run, health_path, created_at
 		FROM releases `+where, args...)
 	if err != nil {
 		return nil, err
@@ -195,7 +193,7 @@ func (d *Deployer) queryReleases(ctx context.Context, where string, args ...any)
 		var r Release
 		var run string
 		var created int64
-		if err := rows.Scan(&r.App, &r.ID, &r.GitSHA, &r.Subject, &r.Branch, &r.ZigVersion, &run, &r.HealthPath, &created); err != nil {
+		if err := rows.Scan(&r.App, &r.ID, &r.Subject, &r.SHA256, &run, &r.HealthPath, &created); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(run), &r.Run); err != nil {
@@ -230,7 +228,7 @@ func (d *Deployer) SetDesired(ctx context.Context, app string, running bool) err
 func (d *Deployer) recoverInterrupted(ctx context.Context) (int64, error) {
 	res, err := d.db.Writer().ExecContext(ctx, `UPDATE deployments
 		SET status = ?, error = 'interrupted: dootd restarted during this deployment', finished_at = ?
-		WHERE status IN (?, ?, ?)`, StatusFailed, time.Now().Unix(), StatusQueued, StatusBuilding, StatusDeploying)
+		WHERE status IN (?, ?, ?, 'building')`, StatusFailed, time.Now().Unix(), StatusQueued, StatusPreparing, StatusDeploying)
 	if err != nil {
 		return 0, err
 	}

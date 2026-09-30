@@ -52,7 +52,7 @@ func (s *sseWriter) ping() error {
 func readLog(path string) string {
 	f, err := os.Open(path)
 	if err != nil {
-		return "(no build log)"
+		return "(no deploy log)"
 	}
 	defer f.Close()
 	st, _ := f.Stat()
@@ -63,7 +63,7 @@ func readLog(path string) string {
 	return string(b)
 }
 
-// deploymentStream tails a build log until the deployment finishes, then
+// deploymentStream tails a deploy log until the deployment finishes, then
 // sends a "done" event with the final status.
 func (s *Server) deploymentStream(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)

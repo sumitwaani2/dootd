@@ -6,16 +6,8 @@
   <form method="post" action="/apps" class="grid">
     {{template "csrf" $.CSRF}}
     <label class="wide">GitHub repository <input name="repo" value="{{.Repo}}" required placeholder="https://github.com/you/blog" list="repos">
-      <small>The app is named after the repository (e.g. <code>my_blog</code> → <code>my-blog</code>). <code>dootd.toml</code> must be at its root.</small></label>
+      <small>The app is named after the repository (e.g. <code>my_blog</code> → <code>my-blog</code>). It is deployed from the repository's GitHub releases, which its release workflow publishes (docs/app-contract.md §2).</small></label>
     {{with $.Data.Repos}}<datalist id="repos">{{range .}}<option value="https://github.com/{{.FullName}}">{{end}}</datalist>{{end}}
-    <label>Branch <input name="branch" value="{{.Branch}}" required></label>
-    <label>Type
-      <select name="type">
-        <option value="zig" {{if eq .Type "zig"}}selected{{end}}>Zig</option>
-        <option value="c" {{if eq .Type "c"}}selected{{end}}>C (built with zig cc)</option>
-      </select>
-      <small>Only changes the default build command</small>
-    </label>
     <label class="wide">Domain <input name="domain" value="{{.Domain}}" placeholder="blog.example.com"><small>DNS record and certificate are created in Cloudflare</small></label>
     {{if $.Data.BucketSet}}
     <label class="wide">Start with data from
@@ -32,8 +24,6 @@
       <label>Memory <input name="memory" value="{{.Memory}}" size="6"></label>
       <label>CPU cores <input name="cpu" value="{{.CPU}}" size="4"></label>
       <label>Processes <input name="pids" value="{{.Pids}}" size="5"></label>
-      <label>Build memory <input name="build_memory" value="{{.BuildMemory}}" size="6"></label>
-      <label>Build timeout <input name="build_timeout" value="{{.BuildTimeout}}" size="6"></label>
     </fieldset>
     <div class="wide"><button class="primary">Create app</button> <a href="/">Cancel</a></div>
   </form>

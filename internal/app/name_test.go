@@ -29,17 +29,22 @@ func TestNameFromRepo(t *testing.T) {
 
 func TestRepoName(t *testing.T) {
 	for in, want := range map[string]string{
-		"https://github.com/me/My_Blog":    "My_Blog",
-		"github.com/me/site.git":           "site",
-		"file:///srv/e2e/sample-zig.git":   "sample-zig",
-		"file:///srv/e2e/repos/guestbook/": "guestbook",
+		"https://github.com/me/My_Blog": "My_Blog",
+		"github.com/me/site.git":        "site",
+		"me/sample-zig":                 "sample-zig",
+		"https://github.com/me/blog/":   "blog",
 	} {
 		r, err := github.ParseRepo(in)
 		if err != nil {
 			t.Fatalf("%s: %v", in, err)
 		}
-		if got := r.RepoName(); got != want {
-			t.Errorf("%s: got %q, want %q", in, got, want)
+		if r.Name != want || r.Owner != "me" {
+			t.Errorf("%s: got %+v, want %q", in, r, want)
+		}
+	}
+	for _, in := range []string{"file:///srv/x.git", "https://gitlab.com/me/x", "me", "me/..", "-me/x"} {
+		if r, err := github.ParseRepo(in); err == nil {
+			t.Errorf("%s: accepted as %+v", in, r)
 		}
 	}
 }
